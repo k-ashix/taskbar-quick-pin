@@ -745,45 +745,7 @@ The mod uses C++17 features (structured bindings, `if constexpr`, lambdas in fun
 
 ## 32. Changelog
 
-### v26.0.0 — Fresh 4-Pass Audit: 4 New Bugs Fixed
-
-Four bugs found in a completely independent re-analysis of v25 across 4 orthogonal passes (thread-safety, resource lifecycle, logic/state-machine, init/teardown) and fixed:
-
-- **Fix: Zero-modifier hotkey intercepts bare key globally (CRITICAL UX BUG)** — `RegisterHotKey` was called whenever `g_hotkeyKey != 0`, even when `g_hotkeyMods == 0` (the "Disabled" setting in the settings panel). `RegisterHotKey` with `fsModifiers = 0` silently registers the bare key (e.g. just `P`) as a system-wide hotkey, intercepting every press of that key in every application regardless of focus. Fixed: registration is now guarded with `g_hotkeyKey != 0 && g_hotkeyMods != 0`. The unregister path in `Wh_ModUninit` is hardened with the same guard so it is always symmetric with registration.
-- **Fix: Unpin operations not blocked during DRAG_REORDER state (HARDENING)** — `UnpinAppByIndex` and `UnpinAllApps` checked `g_dragState` to block unpins during `DRAG_DRAGGING` and `DRAG_PRESS`, but did not check `DRAG_REORDER`. A double-right-click or 5-rapid-click gesture fired while the user was reordering would call `HardStateReset()` (inside `g_cs`) to forcibly set `g_dragState = DRAG_IDLE` while the worker thread was reading it in the DRAG_REORDER loop (outside `g_cs`). The state machine self-recovers on x86-64 due to atomic int semantics, but the user experienced a jarring visual: the live-shuffle animation would abruptly terminate and the floating icon would vanish mid-drag. Fixed: both unpin functions now include `DRAG_REORDER` in the guard condition.
-- **Fix: `Wh_ModInit` failure paths leak all partially-initialised resources (RESOURCE LEAK)** — On any `FALSE` return from `Wh_ModInit` (failed `CreateEventW`, `CreateOverlayWindow`, `CreateGhostWindow`, or `CreateThread`), every resource already allocated — critical sections, icon handles from `LoadPinnedApps`, the overlay HWND, the ghost HWND, `g_exitEvent`, and the registered hotkey — was leaked, with no guarantee that Windhawk would call `Wh_ModUninit` for cleanup. Fixed: added a forward declaration of `Wh_ModUninit` and called it on every `FALSE` return path. `Wh_ModUninit` was already written to be safe when called in a partial-init state (all cleanup blocks are individually null-guarded).
-- **Fix: All `OpenProcess` calls used over-privileged access rights, silently failing on elevated/protected processes (PRIVILEGE BUG)** — Six call sites (`GetProcessPath`, `Resolver_Layer1_UIHit` × 2 incl. UWP child unwrap, `Resolver_Layer2_TaskbarIntelligence` Pass 2, `FindProcessPathByWindowTitle`, `Layer3EnumProc`, `FindRunningProc`) opened process handles with `PROCESS_QUERY_INFORMATION | PROCESS_VM_READ` and called `GetModuleFileNameExW`. On any elevated process (Task Manager, Registry Editor, any app with a `requireAdministrator` manifest) or protected process, `OpenProcess` fails with `ERROR_ACCESS_DENIED`, causing those apps to return an empty path — undetectable, un-pinnable, and always shown as "not running." `UpdateRunningState` already used the correct low-privilege API (`PROCESS_QUERY_LIMITED_INFORMATION` + `QueryFullProcessImageNameW`) introduced to handle exactly this case. All six resolver call sites are now consistent with `UpdateRunningState`: use `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `QueryFullProcessImageNameW(hProc, 0, buf, &len)`.
-
-### v25.0.0 — Deep Re-Analysis: 6 New Bugs Fixed
-
-Six bugs found in a fresh from-scratch full-file audit of v24 and fixed:
-
-- **Fix: Worker thread PRESS-init crash (CRASH — use-after-free)** — After `HitTestIcon` returned a dock index and released `g_cs`, the IDLE→PRESS block immediately accessed `g_pinnedApps[dockIdx].exePath` and `g_pinnedApps[dockIdx].icon` without re-acquiring the lock. In the window between `HitTestIcon`'s CS release and those accesses, the main thread (hotkey or right-click) could call `UnpinAppByIndex`, erasing the element and reallocating the vector, leaving `dockIdx` pointing at freed or shifted memory. Fixed: re-acquire `g_cs`, bounds-check, and atomically snapshot `exePath` + `CopyIcon` before releasing again.
-- **Fix: `PinApp` TOCTOU duplicate-pin race (CRASH + logic bug)** — `IsPinned` was called outside `g_cs` before `PinApp` acquired it. Two concurrent `PinApp` calls (worker-thread DROP and main-thread hotkey) could both pass the check, then both push the same app. Also, iterating `g_pinnedApps` in `IsPinned` without the lock while another thread erases elements is undefined behaviour. Fixed: removed the pre-lock `IsPinned` call; added a guarded re-check immediately after `EnterCriticalSection`, guaranteeing exactly-once insertion.
-- **Fix: `g_secondaryDocks` vector race (DATA RACE — no lock on multi-monitor systems)** — `InitSecondaryDocks`, `DestroySecondaryDocks`, and `RepaintSecondaryDocks` all accessed `g_secondaryDocks` from both the main thread and the worker thread with no synchronization. `DestroySecondaryDocks` could clear the vector while `RepaintSecondaryDocks` was iterating it. Fixed: added a dedicated `g_secondaryDocksCS` critical section (initialized before the first call, deleted after the last). `DestroySecondaryDocks` now atomically swaps the vector out under the lock, then destroys HWNDs outside it. `InitSecondaryDocks` builds the new list locally and commits under the lock. `RepaintSecondaryDocks` guards its iteration with the lock.
-- **Fix: `WinEventProc` secondary dock rebuild storm (PERFORMANCE)** — `EVENT_OBJECT_LOCATIONCHANGE` fires 30–60 times per second during any drag. Without a guard, each event that passed the geometry-change check tore down and recreated all secondary dock HWNDs, causing massive unnecessary window churn on multi-monitor systems. Fixed: added a 2-second rate limiter (`s_lastSecondaryRebuild`) so the rebuild fires at most once every 2 s regardless of event frequency.
-- **Fix: Separator partial-opacity wrong colour (VISUAL — pre-multiply missing)** — `AlphaBlend` with `AC_SRC_ALPHA` requires per-pixel pre-multiplied alpha: stored RGB values must be multiplied by alpha/255 before compositing. GDI draws the pen colour into the DIB with alpha=0; we then set the alpha byte but left the RGB channels at full-intensity. At opacity 1–99 this made the separator appear significantly brighter than intended. Fixed: after setting `px[3] = a`, also write `px[0..2] = channel * a / 255`. At full opacity (a=255, the default) the multiply is a no-op.
-- **Fix: `UpdateRunningState` cap truncated at 64 windows (SILENT TRUNCATION)** — The static path-buffer array was capped at 64 entries. On busy enterprise systems with more than 64 visible titled top-level windows, the `EnumWindows` scan silently stopped collecting at entry 65, making every app beyond that position always appear "not running" regardless of actual state. Fixed: cap raised to 128 (adds ~33 KB of static data — negligible).
-
-### v24.0.0 — Hardening and Animation Fixes
-- **Fix: `HitTestIcon` data race** — now acquires `g_cs` internally. Previously read `g_pinnedApps` on the main thread (`WM_NCHITTEST`) without a lock while the worker thread could be erasing/inserting, causing a potential crash on vector reallocation.
-- **Fix: `SmartLaunch` / `LaunchApp` dangling reference** — both functions now snapshot `exePath` as a value copy under `g_cs` before any slow call (`EnumWindows`, `ShellExecuteExW`). Previously held a `const std::wstring&` across the entire function body, which could become a wild pointer if a hotkey unpin fired concurrently.
-- **Fix: Icons stuck at position 0 on startup** — `ReseatIconPositions()` is now called at every geometry-lock transition (BOOT→STABILISING, STABILISING→STABLE, boot timeout). `LoadPinnedApps` runs before geometry is known, so icons had `currentX = targetX = 0` until the first pin/unpin event. Fixed.
-- **Fix: Slide-in animation frozen** — removed `if (app.isNew) diff += PIN_SLIDE_OFFSET` from the animation loop. This line cancelled the driving force for new icons (offsetting the already-offset `currentX` back to net-zero diff) and prevented the slide from animating.
-- **Fix: `GetRealWindowFromPoint` unsafe cross-thread hide/restore** — replaced the `SetWindowPos(SWP_HIDEWINDOW)` + `WindowFromPoint` + `SetWindowPos(SWP_SHOWWINDOW)` sequence (run from the worker thread) with a safe `return NULL` guard. The hide/restore caused a 1-frame flicker and was unsafe called cross-thread.
-
-### v23.0.0 — Bug Fixes and Performance
-- Fix: `CommitReorder` off-by-one in `insertAt` formula for rightward drags.
-- Fix: `UpdateReorderPositions` out-of-bounds loop when dragging the last slot.
-- Fix: `SetWindowPos` (topmost assertion) throttled from every frame to once per 3 s.
-- Fix: Separator DIB cached — no longer allocated/freed every paint frame.
-- Fix: Dead `g_animationActive` variable removed (was written but never read).
-- Fix: Cross-thread `PeekMessageW` dead code removed from worker thread.
-- Version: 23.0.0.
-
-### v22.1 and earlier
-- Initial public releases. Established the three-layer resolver, drag state machine, registry persistence, and animation system.
-
+- Initial release of Taskbar Quick Pin Dock
 ---
 
 ## 33. Contributing
