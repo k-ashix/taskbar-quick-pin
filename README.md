@@ -67,6 +67,7 @@ Pin any app with a **drag**. **Click** it to launch or focus. **Drag it off** to
 24. [Hooks, build flags & dependencies](#24-hooks-build-flags--dependencies)
 25. [Contributing](#25-contributing)
 26. [Changelog](#changelog)
+27. [License](#license)
 
 ---
 ---
@@ -481,6 +482,12 @@ Contributions welcome — bug reports, docs, and features.
 ### v1.0.0
 
 - Initial release of Taskbar Quick Pin Dock.
+
+---
+
+## License
+
+This project is licensed under the [MIT License](https://opensource.org/licenses/MIT).
 
 ---
 
