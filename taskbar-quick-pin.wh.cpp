@@ -7028,7 +7028,7 @@ DWORD WINAPI WorkerThread(LPVOID) {
     DWORD bootWatchdogStart = GetTickCount();
 
     while (WaitForSingleObject(g_exitEvent, 0) != WAIT_OBJECT_0) {
-        if (!g_csInitialized) { Sleep(16); continue; }
+        if (!g_csInitialized) { WaitForSingleObject(g_exitEvent, 16); continue; }
 
         POINT cursor = {};
         GetCursorPos(&cursor);
@@ -7104,7 +7104,7 @@ DWORD WINAPI WorkerThread(LPVOID) {
             bootWatchdogStart = now;
         }
 
-        if (!g_overlayWnd || !IsWindow(g_overlayWnd)) { Sleep(16); continue; }
+        if (!g_overlayWnd || !IsWindow(g_overlayWnd)) { WaitForSingleObject(g_exitEvent, 16); continue; }
 
         // Re-assert HWND_TOPMOST every 3 s  --  avoids hammering DWM every frame.
         // Per-frame SetWindowPos was the single largest source of input jitter.
@@ -7878,17 +7878,23 @@ DWORD WINAPI WorkerThread(LPVOID) {
         //  16 ms  --  brief post-active transition
         //  50 ms  --  fully idle (saves CPU)
         // ================================================================
+        // NOTE: sleep on g_exitEvent instead of Sleep() so teardown is instant.
+        // A plain Sleep(50) here delayed Wh_ModUninit's worker-join by up to a
+        // full frame (plus any in-flight scan), which blocked Windhawk during a
+        // recompile/reload and made the first "Compile" click(s) appear to do
+        // nothing. WaitForSingleObject returns immediately once g_exitEvent is
+        // signalled, so the thread exits within ~1 ms of teardown starting.
         if (g_dragState == DRAG_DRAGGING || g_dragState == DRAG_REORDER ||
             g_anyAnimationActive || g_dockPosAnimActive) {
             g_idleFrames = 0;
             SetHighResTimer(true);
-            Sleep(8);
+            WaitForSingleObject(g_exitEvent, 8);
         } else if (g_idleFrames < 10) {
             g_idleFrames++;
-            Sleep(16);
+            WaitForSingleObject(g_exitEvent, 16);
         } else {
             SetHighResTimer(false);
-            Sleep(50);
+            WaitForSingleObject(g_exitEvent, 50);
         }
     }
 
@@ -8340,12 +8346,20 @@ BOOL Wh_ModInit() {
     // Bounded geometry retry: the taskbar / DWM composition may not be ready at
     // injection time, so a single RefreshTaskbarCache can leave g_dockLocalW == 0
     // and the dock invisible until the first worker poll (or flying in from 0,0).
-    // Retry briefly (<= ~120 ms total) so the FIRST paint uses correct geometry
-    // -> faster, flicker-free dock appearance at startup.
+    // Retry briefly so the FIRST paint uses correct geometry -> faster,
+    // flicker-free dock appearance at startup.
+    //
+    // PERF: this loop runs on Windhawk's calling thread, so every ms here is a ms
+    // that a Compile/reload blocks the Windhawk UI. On a normal reload the taskbar
+    // is already up, so the FIRST RefreshTaskbarCache succeeds and we break with
+    // ZERO sleep. The retries only matter on a cold boot when DWM isn't ready yet,
+    // so the per-attempt wait was halved (20 -> 10 ms, ~60 ms worst case instead
+    // of ~120 ms). If geometry still isn't ready, the worker's 100 ms boot poll
+    // + snap-position logic corrects it within one cycle anyway.
     for (int attempt = 0; attempt < 6; ++attempt) {
         RefreshTaskbarCache();
         if (g_dockLocalW > 0) break;
-        Sleep(20);
+        Sleep(10);
     }
     LoadPinnedApps();
 
