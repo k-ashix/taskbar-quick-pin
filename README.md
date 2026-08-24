@@ -81,6 +81,39 @@ It's **your own list** — it has nothing to do with the taskbar's built-in pinn
 
 The dock floats on top of the taskbar as a see-through panel. It never resizes or moves your taskbar, and it stays neatly inside the taskbar's height.
 
+### How it works — at a glance
+
+*No need to read the whole guide — here's the whole idea in three little pictures.*
+
+**Pinning an app** 📌
+
+```mermaid
+flowchart LR
+    A["📂 Open<br/>an app"] --> B["🖐️ Drag its window<br/>onto the dock"]
+    B --> C["📌 Icon lands<br/>in your dock"]
+    C --> D["💾 Remembered —<br/>survives restarts"]
+```
+
+**Clicking a pinned icon** 👆
+
+```mermaid
+flowchart LR
+    A["👆 Click a<br/>pinned icon"] --> B{"App already<br/>running?"}
+    B -- "Yes" --> C["🪟 Bring its<br/>window to front"]
+    B -- "No" --> D["⚡ Launch it<br/>fresh"]
+```
+
+**Unpinning (drag it off)** 💨
+
+```mermaid
+flowchart LR
+    A["🖐️ Drag icon<br/>off the dock"] --> B["🪢 Rope<br/>stretches"]
+    B --> C{"Pulled far<br/>enough?"}
+    C -- "Yes" --> D["💨 Rope snaps —<br/>icon poofs to dust"]
+    D --> E["❌ Unpinned"]
+    C -- "No" --> F["↩️ Springs back —<br/>stays pinned"]
+```
+
 ---
 
 ## 2. Get started in 30 seconds
@@ -243,20 +276,27 @@ Check whether the dock is **locked** (you'll see a glow flash when you try). Tap
 
 The mod is a single `.cpp` file compiled by Windhawk's embedded Clang toolchain and injected as a DLL into `explorer.exe`. It **hooks no Win32 functions**. It listens to accessibility events for taskbar geometry and registers its own overlay windows in the Explorer process.
 
+```mermaid
+flowchart TB
+    subgraph MAIN["🧵 Main / UI thread"]
+        direction TB
+        OP["OverlayProc<br/>WM_PAINT · WM_NCHITTEST · WM_RBUTTONUP<br/>WM_HOTKEY · WM_MOUSEWHEEL"]
+        WE["WinEventProc<br/>taskbar move / resize — SetWinEventHook"]
+    end
+    subgraph WORK["🧵 Worker thread — g_workerThread"]
+        direction TB
+        IN["Input polling — 8–50 ms adaptive"]
+        SM["Drag + reorder state machines"]
+        FX["Rope (tether) + dust (vanish) animation"]
+        AN["Per-icon animation — opacity, position, hover"]
+        TT["Triple-tap P / U / L detection"]
+    end
+    CS[("🔒 g_cs — CRITICAL_SECTION<br/>guards g_pinnedApps")]
+    MAIN -->|all reads / writes| CS
+    WORK -->|all reads / writes| CS
 ```
-explorer.exe (main / UI thread)
-  ├─ OverlayProc      WM_PAINT, WM_NCHITTEST, WM_RBUTTONUP, WM_HOTKEY, WM_MOUSEWHEEL, ...
-  ├─ WinEventProc     taskbar move/resize via SetWinEventHook
-  └─ g_cs (CRITICAL_SECTION) ─────────────────────────────────────────┐
-                                                                        │
-explorer.exe (worker thread = g_workerThread)                          │
-  ├─ Input polling (GetAsyncKeyState / cursor, 8–50 ms adaptive)       │
-  ├─ Drag + reorder state machines                                     │
-  ├─ Rope (tether) + dust (vanish) animation                          │
-  ├─ Per-icon animation (opacity, position, hover scale)              │
-  ├─ Triple-tap P / U / L gesture detection                           │
-  └─ Reads/writes g_pinnedApps under g_cs ──────────────────────────────┘
-```
+
+> *(GitHub renders the diagram above automatically.)*
 
 `g_pinnedApps` is the only shared mutable state; every access goes through `g_cs`. Per-frame worker-only globals (`g_dragState`, `g_hoverIndex`, `g_anyAnimationActive`, `g_appScrollStart`…) are single-writer and read by the main thread only for display.
 
