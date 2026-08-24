@@ -7884,13 +7884,22 @@ DWORD WINAPI WorkerThread(LPVOID) {
         // recompile/reload and made the first "Compile" click(s) appear to do
         // nothing. WaitForSingleObject returns immediately once g_exitEvent is
         // signalled, so the thread exits within ~1 ms of teardown starting.
+        //
+        // BOOT: never fall to the slow 50 ms idle cadence until geometry is
+        // locked (STATE_STABLE). Otherwise the worker "goes to sleep" mid-init
+        // -- g_idleFrames climbs past 10 while still in STATE_BOOT/STABILIZING,
+        // the loop drops to 50 ms polls, and the dock stalls before it has
+        // reached a stable width and painted its first correct frame. Staying at
+        // the fast cadence during boot lets initialisation run straight through
+        // to completion (boot is only a few hundred ms, so no steady-state cost).
+        bool notStableYet = (g_systemState != STATE_STABLE);
         if (g_dragState == DRAG_DRAGGING || g_dragState == DRAG_REORDER ||
             g_anyAnimationActive || g_dockPosAnimActive) {
             g_idleFrames = 0;
             SetHighResTimer(true);
             WaitForSingleObject(g_exitEvent, 8);
-        } else if (g_idleFrames < 10) {
-            g_idleFrames++;
+        } else if (g_idleFrames < 10 || notStableYet) {
+            if (!notStableYet) g_idleFrames++;   // don't accrue idle frames during boot
             WaitForSingleObject(g_exitEvent, 16);
         } else {
             SetHighResTimer(false);
