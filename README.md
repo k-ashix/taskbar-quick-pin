@@ -5,7 +5,7 @@
 **Your own mini app dock, tucked neatly to the left of the Start button.**
 
 [![Windhawk Mod](https://img.shields.io/badge/Windhawk_Mod-taskbar--quick--pin-blue.svg)](https://windhawk.net/mods/taskbar-quick-pin)
-[![Version](https://img.shields.io/badge/version-v2.0.0-success.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-v2.5.0-success.svg)](#changelog)
 [![Platform](https://img.shields.io/badge/Windows-11-0078D6.svg)](#)
 [![Build](https://img.shields.io/badge/build-single--file_C%2B%2B-lightgrey.svg)](#)
 
@@ -13,7 +13,7 @@
 
 Pin any app with a **drag**. **Click** it to launch or focus. **Drag it off** to let it go. That's the whole idea — a fast, good-looking launcher that lives right inside your Windows 11 taskbar and remembers your apps across restarts.
 
-> 🪶 **Lightweight by design.** One single-file C++ mod injected into `explorer.exe` — no extra DLLs, no background service, no installer. It never moves or resizes your taskbar; it simply floats a transparent dock on top of it.
+> 🪶 **Lightweight by design.** One single-file C++ mod that runs as a Windhawk **tool mod** in its own `windhawk.exe` process — no extra DLLs, no background service, no installer, and a fault can't take the shell down with it. It never moves or resizes your taskbar; it simply floats a transparent dock on top of it.
 
 ### Why you'll like it
 
@@ -139,10 +139,10 @@ flowchart LR
 | Drag a pinned icon **left / right** inside the dock | **Reorders** it, live |
 | Drag a pinned icon **off** the dock until the rope snaps | **Unpins** it (with a dust poof) |
 | **Double-right-click** a pinned icon | **Unpins** it *(off by default — turn on in settings)* |
-| **Triple-click** any icon quickly | **Unpins everything** |
-| Tap **P** three times quickly | **Pins** the app you're currently using |
-| Tap **U** three times quickly | **Unpins** the app you're currently using |
-| Tap **L** three times quickly | **Locks / unlocks** the dock |
+| **Triple-click** any icon quickly | **Unpins everything** *(opt-in — off by default)* |
+| Tap **P** three times quickly | **Pins** the app you're currently using *(opt-in — off by default)* |
+| Tap **U** three times quickly | **Unpins** the app you're currently using *(opt-in — off by default)* |
+| Tap **L** three times quickly | **Locks / unlocks** the dock *(opt-in — off by default)* |
 | Press the **hotkey** (default **Ctrl + Alt + P**) | Pins or unpins the app you're currently using |
 | **Scroll** the mouse wheel over the dock | Glides the highlight across your pinned icons |
 | Hover an icon | It gently **magnifies**, macOS-style |
@@ -216,7 +216,7 @@ All settings live in the Windhawk settings panel under this mod. **Most apply in
 | **Multi-monitor dock** | Show a **mirrored, read-only** dock on each secondary monitor. Only the primary supports pinning. *(Reload to apply.)* | `off` |
 | **Startup delay** | Extra wait before the dock loads, 0–3000 ms. Raise it if the dock appears in the wrong spot at login. | `0` |
 | **Sync with taskbar auto-hide** | Hide the dock along with the taskbar when auto-hide slides it off screen. | `off` |
-| **Logging level** | Diagnostic detail: None / Errors / Important / Debug / Trace. Only raise it while chasing a specific bug. | `1` (Errors) |
+| **Verbose logging** | Emit the high-frequency drag/reorder + debug traces to the Windhawk log. Leave off to keep the log quiet — only errors and key events are logged. Troubleshooting only. | `off` |
 | **Pin hotkey — modifiers** | Which modifier keys to hold for the pin/unpin hotkey. Set to "Disabled" to switch the hotkey off. | `Ctrl + Alt` |
 | **Pin hotkey — key** | Which key to press with the modifiers above. | `P` |
 
@@ -237,7 +237,7 @@ Yes. Almost any real program works — it doesn't have to be a Store app or a St
 Set the **modifiers** and **key** separately in settings. Set modifiers to "Disabled" to turn the hotkey off entirely.
 
 **Where are my pins stored?**
-In your Windows registry, under your user account, so they survive restarts. (Path is listed in the developer section.)
+In Windhawk's own per-mod storage (via `Wh_SetStringValue` / `Wh_SetBinaryValue`), tied to your user account, so they survive restarts — and they're removed automatically when you uninstall the mod, leaving nothing behind.
 
 ---
 
@@ -275,14 +275,14 @@ Check whether the dock is **locked** (you'll see a glow flash when you try). Tap
 
 ## 11. Architecture at a glance
 
-The mod is a single `.cpp` file compiled by Windhawk's embedded Clang toolchain and injected as a DLL into `explorer.exe`. It **hooks no Win32 functions**. It listens to accessibility events for taskbar geometry and registers its own overlay windows in the Explorer process.
+The mod is a single `.cpp` file compiled by Windhawk's embedded Clang toolchain. It runs as a Windhawk **tool mod** (`@include windhawk.exe`): a launcher instance spawns a dedicated `windhawk.exe -tool-mod "taskbar-quick-pin"` process and the real logic runs there via `WhTool_ModInit` / `WhTool_ModSettingsChanged` / `WhTool_ModUninit` — so it is **not** injected into `explorer.exe` and a fault can't take the shell down. It **hooks no Win32 functions** (aside from the tool-mod launcher's own entry-point hook). It discovers taskbar geometry by polling on its worker thread and registers its own overlay windows on a dedicated UI thread.
 
 ```mermaid
 flowchart TB
-    subgraph MAIN["🧵 Main / UI thread"]
+    subgraph MAIN["🧵 Dedicated UI thread — g_uiThread"]
         direction TB
         OP["OverlayProc<br/>WM_PAINT · WM_NCHITTEST · WM_RBUTTONUP<br/>WM_HOTKEY · WM_MOUSEWHEEL"]
-        WE["WinEventProc<br/>taskbar move / resize — SetWinEventHook"]
+        WE["Owns every top-level window<br/>+ runs the GetMessageW / DispatchMessageW pump"]
     end
     subgraph WORK["🧵 Worker thread — g_workerThread"]
         direction TB
@@ -299,7 +299,7 @@ flowchart TB
 
 > *(GitHub renders the diagram above automatically.)*
 
-`g_pinnedApps` is the only shared mutable state; every access goes through `g_cs`. Per-frame worker-only globals (`g_dragState`, `g_hoverIndex`, `g_anyAnimationActive`, `g_appScrollStart`…) are single-writer and read by the main thread only for display.
+`g_pinnedApps` is the only shared mutable state; every access goes through `g_cs`. The scalar cross-thread globals (`g_dragState`, `g_hoverIndex`, `g_iconsLocked`, `g_appScrollStart`, `g_scrollNavUntil`) are `std::atomic`; the shared `std::wstring`s are guarded by `g_cs`. They are written by the worker and read by the UI thread only for display.
 
 **Key tunables (compile-time):**
 
@@ -319,16 +319,16 @@ flowchart TB
 
 ## 12. Thread model & locking
 
-**Main thread** owns the overlay windows, processes all `WM_*` messages, and receives WinEvent geometry notifications. It never does slow I/O — registry writes are deferred outside any lock.
+**Dedicated UI thread** (`g_uiThread`, started from `Wh_ModInit`) registers all window classes against the mod's own module, creates every top-level window (input owner, overlay, ghost, tether, vanish, secondary docks), registers the pin hotkey, and runs the `GetMessageW` / `DispatchMessageW` pump. It processes all `WM_*` messages and, on teardown, destroys every window + hotkey and `UnregisterClassW`s all seven classes **on the same thread that created them** — so nothing is torn down from a foreign thread. It never does slow I/O.
 
-**Worker thread** (`g_workerThread`, created in `Wh_ModInit`, exited via `g_exitEvent`) runs an adaptive polling loop (8 ms while active, 16 ms cool-down, 50 ms when idle). It owns the drag/reorder machines, all animation, the rope and dust effects, and the triple-tap gestures.
+**Worker thread** (`g_workerThread`, created in `Wh_ModInit`, exited via `g_exitEvent`) runs an adaptive polling loop (8 ms while active, 16 ms cool-down, 50 ms when idle). It owns the drag/reorder machines, all animation, the rope and dust effects, the triple-tap gestures, and the taskbar-geometry polling FSM.
 
 **Cross-thread rules:**
 
 - `g_pinnedApps` — always under `g_cs`.
-- Overlay/ghost/tether/vanish windows are created on the main thread; the worker only calls `InvalidateRect`, `ShowWindow`, and `UpdateLayeredWindow` on windows it owns.
-- `SavePinnedApps()` snapshots paths under `g_cs`, then releases before registry I/O.
-- The double-right-click unpin runs on the main thread but hands the dust request to the worker via interlocked globals (`g_vanishReq*`), because all vanish GDI must run on the worker thread.
+- Overlay/ghost/tether/vanish windows are created on the dedicated UI thread; the worker only calls `InvalidateRect`, `ShowWindow`, and `UpdateLayeredWindow` on them (copy-under-lock, then call — never hold `g_cs` across a cross-thread send).
+- `SavePinnedApps()` snapshots paths under `g_cs`, then releases before writing to Windhawk mod storage (`Wh_SetBinaryValue` / `Wh_SetStringValue`).
+- The double-right-click unpin hands the dust request to the worker via interlocked globals (`g_vanishReq*`), because all vanish GDI must run on the worker thread.
 - `g_secondaryDocks` has its own dedicated lock (the worker iterates it in `RepaintSecondaryDocks`).
 
 ---
@@ -341,7 +341,7 @@ The taskbar's exact size isn't known at injection. `RefreshTaskbarCache()` drive
 STATE_BOOT  →  first valid width  →  STATE_STABILISING  →  two stable reads (±10 px)  →  STATE_STABLE
 ```
 
-On each transition that commits a new `g_dockLocalW`, `ReseatIconPositions()` recomputes every icon's `targetX`/`currentX`. Without it, icons loaded from the registry (which start at position 0, before the width is known) would pile up at the left until the first pin/unpin. `startupDelay` adds an optional pre-init wait for slow logins.
+On each transition that commits a new `g_dockLocalW`, `ReseatIconPositions()` recomputes every icon's `targetX`/`currentX`. Without it, icons loaded from Windhawk mod storage (which start at position 0, before the width is known) would pile up at the left until the first pin/unpin. `startupDelay` adds an optional pre-init wait for slow logins.
 
 ---
 
@@ -396,7 +396,7 @@ A separate layered window (`g_tetherWnd` / `g_tetherDIB` / `g_tetherBits`) draws
 
 The "Thanos" disintegration (`VANISH_MS = 900`) is a self-contained particle system on its own layered window (`g_vanishWnd` / `g_vanishDIB`):
 
-`BeginVanish()` → `AddIconVanish()` (samples the icon into `VanishParticle`s with drift velocities) → `CommitVanish()` (derives accent colour, bounding box, clamps to 4096²) → `UpdateVanishWindow()` advances one frame per tick and presents via `UpdateLayeredWindow`. One vanish can span many icons at once (used by unpin-all). It supports both the double-right-click unpin (requested from the main thread via `g_vanishReq*`) and the mid-drag rope break.
+`BeginVanish()` → `AddIconVanish()` (samples the icon into `VanishParticle`s with drift velocities) → `CommitVanish()` (derives accent colour, bounding box, clamps to 4096²) → `UpdateVanishWindow()` advances one frame per tick and presents via `UpdateLayeredWindow`. One vanish can span many icons at once (used by unpin-all). It supports both the double-right-click unpin (requested from the UI thread via `g_vanishReq*`) and the mid-drag rope break.
 
 ---
 
@@ -444,10 +444,10 @@ HKEY_CURRENT_USER\Software\WindhawkMods\taskbar-quick-pin
 
 ## 24. Hooks, build flags & dependencies
 
-**No Win32 API hooks.** The mod only uses `SetWinEventHook` (accessibility events), `RegisterHotKey`, in-process `IUIAutomation`, and `SHAppBarMessage` (auto-hide). If it ever crashes, Explorer simply unloads the DLL and the dock disappears — no trampoline risk.
+**No Win32 API hooks.** The mod only uses `RegisterHotKey`, in-process `IUIAutomation`, `GetAsyncKeyState` polling, and `SHAppBarMessage` (auto-hide) — plus its own layered top-level windows. (There is no `SetWinEventHook`; taskbar geometry comes purely from the worker's polling FSM.) If it ever crashes, Explorer simply unloads the DLL and the dock disappears — no trampoline risk.
 
 ```
-@compilerOptions -lpsapi -lshell32 -lole32 -loleaut32 -luuid -lshlwapi
+@compilerOptions -lshell32 -lole32 -loleaut32 -luuid -lshlwapi
                  -lgdi32 -lmsimg32 -luiautomationcore -ldwmapi -lwinmm
 ```
 
@@ -466,6 +466,13 @@ Contributions welcome — bug reports, docs, and features.
 ---
 
 ## Changelog
+
+### v2.5.0
+
+- 🧵 **Dedicated UI thread architecture** (`g_uiThread`): all overlay, ghost, tether, vanish, and dialog windows are registered, created, pumped, and destroyed on their dedicated thread.
+- 🛡️ **Safe mod teardown** (`Wh_ModUninit`): joins worker and UI threads gracefully with `g_exitEvent` and unregisters all 7 custom window classes preventing crashes on reload.
+- ⚙️ **Unified settings loading** via `LoadSettings()` and decoupled pinned app limits.
+- 🧹 **Code hygiene & stability**: eliminated memory leaks, dangling class registrations, and cross-thread race conditions.
 
 ### v2.0.0
 

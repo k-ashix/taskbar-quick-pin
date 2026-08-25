@@ -1,2 +1,8 @@
+# Postman workspace metadata
+.postman/
+postman/
+
+# Local notes and scratch files
 next.md
 README NEW.md
+check_balance.ps1
