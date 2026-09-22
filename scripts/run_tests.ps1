@@ -1,11 +1,30 @@
 <#
     run_tests.ps1  --  Build & run all unit tests for taskbar-quick-pin.
 
-    Location: scripts\. Run it from anywhere; it locates the repo root (one
-    level up from this script) and the tests\ folder under it, so a fresh
-    clone just needs:
+    HOW TO RUN
+    ----------
+    No arguments are required. The default command runs ALL unit tests and then
+    automatically runs every enabled source/guard check.
 
-        powershell -ExecutionPolicy Bypass -File scripts\run_tests.ps1
+    From the repository root:
+
+        powershell -ExecutionPolicy Bypass -File .\scripts\run_tests.ps1
+
+    From any directory, using the full path:
+
+        powershell -ExecutionPolicy Bypass -File "G:\8_VS\1_Completed_Zip\Taskbar_quick_pin\scripts\run_tests.ps1"
+
+    From an existing PowerShell prompt, this shorter form also works when the
+    current-user execution policy allows local scripts:
+
+        & "G:\8_VS\1_Completed_Zip\Taskbar_quick_pin\scripts\run_tests.ps1"
+
+    Success is reported as "OVERALL : PASS" and process exit code 0. Any unit
+    test or auto-invoked guard failure reports "OVERALL : FAIL" and returns a
+    non-zero exit code, so this same command is suitable for CI.
+
+    The script locates the repository root and tests\ directory relative to its
+    own file path. Therefore it does not depend on the current working directory.
 
     --------------------------------------------------------------------------
     Why the tests are NOT linked against taskbar-quick-pin.wh.cpp
@@ -24,23 +43,31 @@
       2. Runs each resulting .exe and records pass/fail (exit code 0 == pass)
       3. Writes a FULL transcript to a timestamped log in the repo root:
              test_result_run_{HH_MM_AM/PM}.log   (e.g. test_result_run_05_38_AM.log)
-      4. Keeps the TERMINAL quiet: only a compact progress line + final summary
-         are printed. Per-test detail and any failure output go to the log.
-         (Failures are still echoed to the terminal so problems aren't hidden.)
+      4. Keeps the TERMINAL quiet and stable: no carriage-return animation.
+         Output uses clear sections, aligned key/value rows, and blank lines that
+         remain readable when redirected to a file. Per-test PASS detail stays in
+         the transcript unless -ShowPass is used; failures are always displayed.
       5. Cleans up: removes tests\build\ so no .exe artifacts remain next to
          the source. All .cpp / .h source is left untouched.
+      6. error.log: written to the repo root ONLY when something fails.
+         Contains every build-fail, test-fail, and guard-fail with their full
+         output, plus a pointer to the full transcript. On a clean PASS run the
+         file is never created; if a stale one exists from a previous failure it
+         is automatically deleted so its presence always means "last run failed".
 
-    After the tests, it also auto-invokes check_balance.ps1 (in scripts\)
-    so one command does both. That step is best-effort (a missing script only
-    warns) and can be turned off with -SkipBalanceCheck.
+    After the unit tests, the default run automatically invokes the log-layer
+    guard and self-test, empty-body guard and self-test, balance check, and the
+    source-invariant regression gate. No extra flags are needed.
 
     Options:
-        -KeepBinaries       keep the compiled exes in tests\build\ for debugging
-        -SkipBalanceCheck   do NOT run check_balance.ps1 after the tests
-        -SkipEmptyBodyCheck do NOT run check_empty_body.ps1 after the tests
-        -ShowPass           also print per-test PASS lines to the terminal
-        -Compiler g++       choose the C++ compiler (default: g++)
-        -Std c++17          choose the language standard (default: c++17)
+        -KeepBinaries        keep compiled exes in tests\build\ for debugging
+        -SkipLogLayerCheck   skip the log-layer guard and its self-test
+        -SkipEmptyBodyCheck  skip the empty-body guard and its self-test
+        -SkipBalanceCheck    skip the delimiter balance check
+        -SkipRegressionCheck skip the source-invariant regression gate
+        -ShowPass            print each successful test to the terminal
+        -Compiler g++        choose the C++ compiler (default: g++)
+        -Std c++17           choose the language standard (default: c++17)
 #>
 
 [CmdletBinding()]
@@ -56,6 +83,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Accumulates every failure detail during the run.
+# Written to error.log ONLY if the overall result is FAIL; never created on PASS.
+$ErrorLines = [System.Collections.Generic.List[string]]::new()
 
 # This script lives in scripts\ ; the repo root is one level up, and tests
 # live in <root>\tests. check_balance.ps1 is a sibling in this same scripts\ dir.
@@ -89,9 +120,34 @@ function Write-Log {
     }
 }
 
-# Start the log with a header.
-Set-Content -Path $LogFile -Value ("Test run  :  " + (Get-Date).ToString("yyyy-MM-dd HH:mm:ss"))
-Write-Host ("Log        : {0}" -f $LogFile) -ForegroundColor Cyan
+# Stable output helpers. These write ordinary newline-delimited records instead
+# of carriage-return animation, so terminal, redirected-file, and CI output all
+# have the same readable structure.
+function Write-Section {
+    param([string]$Title)
+    Write-Log ""
+    Write-Log ("=== {0} ===" -f $Title) -Color Cyan -ToConsole
+}
+
+function Write-Field {
+    param(
+        [string]$Name,
+        [string]$Value,
+        [ConsoleColor]$Color
+    )
+    $line = "{0,-28}: {1}" -f $Name, $Value
+    if ($PSBoundParameters.ContainsKey('Color')) {
+        Write-Log $line -Color $Color -ToConsole
+    } else {
+        Write-Log $line -ToConsole
+    }
+}
+
+# Start the log and terminal with a compact, structured run header.
+Set-Content -Path $LogFile -Value ("Test run: " + (Get-Date).ToString("yyyy-MM-dd HH:mm:ss"))
+Write-Section "TASKBAR QUICK PIN TEST RUN"
+Write-Field "Repository" $RepoRoot
+Write-Field "Transcript" $LogFile
 
 if (-not (Test-Path $TestsDir)) {
     Write-Log ("ERROR: tests directory not found at {0}" -f $TestsDir) -Color Red -ToConsole
@@ -116,12 +172,13 @@ if ($tests.Count -eq 0) {
     exit 0
 }
 
-Write-Log ("Compiler : {0}" -f $cc.Source)
-Write-Log ("Standard : {0}" -f $Std)
-Write-Log ("Tests    : {0} file(s)" -f $tests.Count)
-Write-Log ("-" * 60)
-
-Write-Host ("Building & running {0} test(s) ... (full detail -> log)" -f $tests.Count)
+Write-Section "UNIT TESTS"
+Write-Field "Compiler" $cc.Source
+Write-Field "C++ standard" $Std
+Write-Field "Test files" ("{0}" -f $tests.Count)
+Write-Field "Console detail" $(if ($ShowPass) { "all PASS/FAIL rows" } else { "failures + summary" })
+Write-Log ""
+Write-Log ("Building and running {0} test(s). Detailed per-test output is in the transcript." -f $tests.Count) -ToConsole
 
 $passed = 0
 $failed = 0
@@ -132,18 +189,20 @@ foreach ($t in $tests) {
     $name = [System.IO.Path]::GetFileNameWithoutExtension($t.Name)
     $exe  = Join-Path $BuildDir ($name + ".exe")
 
-    # Compact, single-line progress indicator on the terminal (overwritten
-    # each iteration so it stays to one line and doesn't spam the console).
-    Write-Host ("`r  [{0,2}/{1}] {2,-40}" -f $idx, $tests.Count, $name) -NoNewline
+    # Stable per-test progress is written to the transcript. The terminal stays
+    # quiet by default; -ShowPass prints one ordinary line per successful test.
+    Write-Log ("[{0,2}/{1}] {2}" -f $idx, $tests.Count, $name)
 
     # --- Compile (headers are found via -I tests\) ---
     $compileLog = & $Compiler "-std=$Std" "-I", $TestsDir, $t.FullName "-o", $exe 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Log ("[BUILD FAIL] {0}" -f $name)
         $compileLog | ForEach-Object { Write-Log ("    $_") }
-        # Surface build failures on the terminal (clear the progress line first).
-        Write-Host ("`r{0}`r" -f (" " * 60)) -NoNewline
-        Write-Host ("[BUILD FAIL] {0}  (see log)" -f $name) -ForegroundColor Red
+        # Surface build failures on the terminal; full compiler output is logged.
+        Write-Host ("[BUILD FAIL] {0} (see transcript)" -f $name) -ForegroundColor Red
+        # Capture for error.log
+        $ErrorLines.Add("[BUILD FAIL] $name")
+        $compileLog | ForEach-Object { $ErrorLines.Add("    $_") }
         $failed++
         continue
     }
@@ -153,27 +212,26 @@ foreach ($t in $tests) {
     if ($LASTEXITCODE -eq 0) {
         Write-Log ("[PASS] {0}" -f $name)
         if ($ShowPass) {
-            Write-Host ("`r{0}`r" -f (" " * 60)) -NoNewline
             Write-Host ("[PASS] {0}" -f $name) -ForegroundColor Green
         }
         $passed++
     } else {
         Write-Log ("[FAIL] {0}" -f $name)
         $runOut | ForEach-Object { Write-Log ("    $_") }
-        # Always surface failures on the terminal (clear the progress line first).
-        Write-Host ("`r{0}`r" -f (" " * 60)) -NoNewline
-        Write-Host ("[FAIL] {0}  (see log)" -f $name) -ForegroundColor Red
+        # Always surface failures on the terminal.
+        Write-Host ("[FAIL] {0} (see transcript)" -f $name) -ForegroundColor Red
         $runOut | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        # Capture for error.log
+        $ErrorLines.Add("[FAIL] $name")
+        $runOut | ForEach-Object { $ErrorLines.Add("    $_") }
         $failed++
     }
 }
 
-# Clear the trailing progress line.
-Write-Host ("`r{0}`r" -f (" " * 60)) -NoNewline
-
-Write-Log ("-" * 60)
-$summary = ("SUMMARY: {0} passed, {1} failed, {2} total" -f $passed, $failed, $tests.Count)
-Write-Log $summary -Color ($(if ($failed -eq 0) { "Green" } else { "Red" })) -ToConsole
+Write-Log ""
+Write-Field "Passed" ("{0}" -f $passed) $(if ($failed -eq 0) { "Green" } else { "White" })
+Write-Field "Failed" ("{0}" -f $failed) $(if ($failed -eq 0) { "Green" } else { "Red" })
+Write-Field "Total"  ("{0}" -f $tests.Count)
 
 # --- Cleanup: remove all build artifacts so no .exe lingers by the source ---
 if (-not $KeepBinaries) {
@@ -205,6 +263,9 @@ if (-not $KeepBinaries) {
 $extraFailed = 0
 $subCheckStatuses = [ordered]@{}
 
+Write-Section "AUTOMATED GUARDS"
+Write-Log "Enabled guards run quietly; their full output is stored in the transcript." -ToConsole
+
 function Invoke-SubCheck {
     # NOTE: the param is $ExtraArgs, NOT $Args. $Args is a PowerShell AUTOMATIC
     # variable; using it as a param name does not bind reliably, which silently
@@ -217,14 +278,17 @@ function Invoke-SubCheck {
         $script:subCheckStatuses[$Label] = "SKIPPED (missing)"
         return
     }
-    Write-Log ("-" * 60)
-    Write-Log ("Running {0} ..." -f $ScriptName)
+    Write-Log ""
+    Write-Log ("[CHECK] {0} ({1})" -f $Label, $ScriptName)
     $out = & powershell -ExecutionPolicy Bypass -File $path @ExtraArgs 2>&1
     $code = $LASTEXITCODE
     $out | ForEach-Object { Write-Log ("    $_") }
     if ($code -ne 0) {
         Write-Log ("{0}: FAIL (exit {1}) -- see log." -f $Label, $code) -Color Red -ToConsole
         $script:subCheckStatuses[$Label] = "FAIL (exit $code)"
+        # Capture for error.log
+        $script:ErrorLines.Add("[GUARD FAIL] $Label (exit $code)")
+        $out | ForEach-Object { $script:ErrorLines.Add("    $_") }
         $script:extraFailed++
     } else {
         Write-Log ("{0}: OK." -f $Label)
@@ -263,15 +327,38 @@ if (-not $SkipRegressionCheck) {
 }
 
 $overallPassed = ($failed -eq 0 -and $extraFailed -eq 0)
-Write-Log ("=" * 60)
-Write-Log "FINAL SUMMARY" -ToConsole
-Write-Log ("Unit tests : {0} passed, {1} failed, {2} total" -f $passed, $failed, $tests.Count) -ToConsole
+Write-Section "FINAL RESULT"
+Write-Field "Unit tests" ("{0} passed / {1} failed / {2} total" -f $passed, $failed, $tests.Count)
 foreach ($entry in $subCheckStatuses.GetEnumerator()) {
-    Write-Log ("{0,-27}: {1}" -f $entry.Key, $entry.Value) -ToConsole
+    Write-Field $entry.Key $entry.Value $(if ($entry.Value -eq "PASS") { "Green" } elseif ($entry.Value -like "FAIL*") { "Red" } else { "Yellow" })
 }
-Write-Log ("Sub-checks : {0} enabled failure(s)" -f $extraFailed) -ToConsole
-Write-Log ("Transcript : {0}" -f $LogFile) -ToConsole
-Write-Log ("OVERALL    : {0}" -f $(if ($overallPassed) { "PASS" } else { "FAIL" })) -Color ($(if ($overallPassed) { "Green" } else { "Red" })) -ToConsole
+Write-Field "Guard failures" ("{0}" -f $extraFailed) $(if ($extraFailed -eq 0) { "Green" } else { "Red" })
+Write-Field "Transcript" $LogFile
+Write-Log ""
+Write-Field "OVERALL" $(if ($overallPassed) { "PASS" } else { "FAIL" }) $(if ($overallPassed) { "Green" } else { "Red" })
+
+# --- error.log: created ONLY on failure; deleted (or never created) on PASS ---
+$ErrorLogFile = Join-Path $RepoRoot "error.log"
+if ($overallPassed) {
+    # Clean run: remove any stale error.log from a previous failed run.
+    if (Test-Path $ErrorLogFile) {
+        Remove-Item -Force $ErrorLogFile
+        Write-Log "Removed stale error.log (run is clean)." -ToConsole
+    }
+} else {
+    # Something failed: write a focused error.log with full failure details.
+    $header = @(
+        ("error.log  --  generated by run_tests.ps1"),
+        ("Run timestamp : " + (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")),
+        ("Full transcript: " + $LogFile),
+        (""),
+        ("=" * 60),
+        ("")
+    )
+    Set-Content -Path $ErrorLogFile -Value ($header + $ErrorLines)
+    Write-Log ""
+    Write-Log ("error.log written: {0}" -f $ErrorLogFile) -Color Red -ToConsole
+}
 
 # Non-zero exit if any unit test OR any auto-chained sub-check failed (CI).
 if ($overallPassed) { exit 0 } else { exit 1 }

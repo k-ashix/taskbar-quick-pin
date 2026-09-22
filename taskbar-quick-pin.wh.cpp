@@ -2,13 +2,13 @@
 // @id              taskbar-quick-pin
 // @name            Left Taskbar Quick Pin Dock
 // @description     A persistent icon dock anchored left of the Start button. Drag any app to pin it. Left-click to launch or focus. Double-right-click to unpin. Drag within the dock to reorder.
-// @version         2.5.1
+// @version         2.5.2
 // @author          Ashix
 // @github          https://github.com/k-ashix
 // @twitter         https://x.com/k_ashix
 // @include         explorer.exe
 // @architecture    x86-64
-// @compilerOptions -lshell32 -lole32 -loleaut32 -luuid -lshlwapi -lgdi32 -lmsimg32 -luiautomationcore -ldwmapi -lwinmm
+// @compilerOptions -lshell32 -lole32 -loleaut32 -luuid -lshlwapi -lgdi32 -lmsimg32 -ldwmapi -lwinmm
 // ==/WindhawkMod==
 
 // For bug reports and feature requests, please open an issue here:
@@ -1973,6 +1973,19 @@ static std::wstring GetProcessPath(HWND hwnd) {
     return std::wstring(buf);
 }
 
+// INTENTIONALLY SEPARATE from IsTrueSystemWindow below -- do NOT merge them.
+// They look near-identical but are two different classifiers used on two
+// different code paths, and their class lists / ordering differ on purpose:
+//   * IsSystemWindow  -- the DRAG-SOURCE / foreground gate. Used at the general
+//     call sites (SmartLaunch foreground checks, drag-candidate gating). Its job
+//     is "should we treat the window under the cursor as a real app?"
+//   * IsTrueSystemWindow -- the RESOLVER-pipeline classifier. It additionally
+//     rejects ReBarWindow32 and orders its checks for the resolver's needs.
+// Their taskbar/system class sets are deliberately NOT the same set, so folding
+// one into the other would silently change behavior on one path or the other.
+// There is no runtime harness here to prove such a merge safe, so they stay two
+// functions. If you touch one, decide consciously whether the other should
+// change too.
 static bool IsSystemWindow(HWND hwnd) {
     if (!hwnd) return true;
     wchar_t cls[256] = {};
@@ -1999,7 +2012,10 @@ static bool IsSystemWindow(HWND hwnd) {
     return false;
 }
 
-// Identical classification used in the resolver pipeline
+// Resolver-pipeline classifier. SIMILAR to IsSystemWindow above but NOT
+// identical and NOT interchangeable (see the long note there): this variant
+// also rejects ReBarWindow32 and orders its checks for the resolver. Keep the
+// two separate.
 static bool IsTrueSystemWindow(HWND hwnd) {
     if (!hwnd) return true;
     wchar_t cls[256] = {};
@@ -2026,6 +2042,17 @@ static bool IsTrueSystemWindow(HWND hwnd) {
     return false;
 }
 
+// PERF NOTE (intentional, do not "optimize" blindly): this does a fresh
+// FindWindowW + GetWindowRect on every call, and it runs on a hot path (every
+// ~8 ms frame in DRAG_CANDIDATE). g_cachedTBRect already holds a maintained
+// taskbar rect and could replace the live query -- BUT that swap changes the
+// freshness semantics: g_cachedTBRect is only refreshed on the worker's cache
+// tick, so during a taskbar move/auto-hide slide the cached rect can lag the
+// real one, and this function is used for a hit test where a stale rect gives a
+// wrong yes/no. The live query is always correct. Switching to the cache is a
+// behavioral change that needs runtime verification on a real shell (cursor
+// crossing the taskbar edge mid-slide), which cannot be done from the static
+// test harness -- so it is deliberately left as a live query for now.
 static bool IsCursorOverTaskbar(POINT pt) {
     HWND tb = FindWindowW(L"Shell_TrayWnd", NULL);
     if (!tb) return false;
@@ -2092,7 +2119,10 @@ static std::wstring Resolver_Layer1_UIHit(POINT pt) {
 
     // Guard: if we resolved explorer.exe and the cursor is in the taskbar region,
     // reject here  --  Layer 2 (UIAutomation) is authoritative for the taskbar surface.
-    if (StrStrIW(result.c_str(), L"explorer.exe")) {
+    // Match by FILENAME (IsExplorerExePath -> PathFindFileNameW + _wcsicmp), not a
+    // whole-path StrStrIW substring, which would false-match any path that merely
+    // contains the text "explorer.exe".
+    if (IsExplorerExePath(result)) {
         HWND tb = FindWindowW(L"Shell_TrayWnd", NULL);
         RECT tbr = {};
         if (tb && GetWindowRect(tb, &tbr)) {
@@ -4197,7 +4227,16 @@ static bool PromptWorkspaceName(HWND owner, const std::wstring& currentName, std
             PostQuitMessage((int)msg.wParam);
             break;
         }
-        if (got == -1) break;   // GetMessageW error -- bail out of the modal loop
+        if (got == -1) {
+            // GetMessageW error -- bail out of the modal loop. Tear the dialog
+            // down here too: its RenameDialogState* points at a stack frame
+            // that is about to unwind, so leaving dlg alive would leak a window
+            // bound to freed storage. (Practically unreachable with a NULL hwnd
+            // filter, but the WM_QUIT path already destroys -- both terminating
+            // paths must.)
+            if (IsWindow(dlg)) DestroyWindow(dlg);
+            break;
+        }
         if (!IsDialogMessageW(dlg, &msg)) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
@@ -4890,6 +4929,26 @@ static void ApplyDockRegion(HWND hwnd) {
 }
 
 // ---- Win11 acrylic blur-behind (undocumented accent API) for tinted frosted glass ----
+//
+// NOT DEAD CODE -- do not delete this SetWindowCompositionAttribute plumbing.
+// A static review may flag it as "plumbing that only ever DISABLES an accent
+// that is never enabled" and therefore removable. That reading is wrong: the
+// DISABLE call is load-bearing. Unlike a truly unused API wrapper, this one is
+// invoked on every dock window at creation (DisableDockAcrylic() -> called from
+// the window-setup path around line 5003) and it fixes a REAL, visible bug.
+//
+// Why it must stay (and why it differs from ordinary dead plumbing):
+//   * Windows 11 gives layered/colour-keyed top-level windows an acrylic accent
+//     by DEFAULT via DWM. Our dock is a colour-key layered window (see
+//     ApplyDockGlassTint), so if we do nothing, DWM composites an opaque BLACK
+//     acrylic slab behind it -- the dock renders as a black rectangle.
+//   * The earlier SetDockAcrylic(...) path (which ENABLED the accent) was
+//     removed. But simply removing the enable is not enough: the default accent
+//     still applies. We must EXPLICITLY set AccentState = QP_ACCENT_DISABLED
+//     once, at window creation, to remove the material entirely.
+//   * So this block is "only a disable" on purpose -- that disable is the fix.
+//     Deleting the typedef/loader/DisableDockAcrylic would bring the black slab
+//     back. There is a regression guard for the call site; keep it green.
 enum QP_ACCENT_STATE { QP_ACCENT_DISABLED = 0, QP_ACCENT_ENABLE_ACRYLICBLURBEHIND = 4 };
 struct QP_ACCENT_POLICY { int AccentState; int AccentFlags; unsigned int GradientColor; int AnimationId; };
 struct QP_WINCOMPATTRDATA { int Attrib; PVOID pvData; SIZE_T cbData; };
@@ -5835,9 +5894,10 @@ static void UpdateTetherWindow(POINT cursorPt) {
     bool inDrag = ENABLE_ICON_THREADS && g_dragFromDock &&
                   g_dragState == DRAG_DRAGGING && g_dragFromDockIdx >= 0;
 
-    // Diagnostic (guarded): edge-triggered log each time the tether "active"
-    // gate flips. Shows WHY the rope may not run (threads off? never DRAGGING?).
-    // Silent unless "Verbose debug logging" is enabled.
+    // Diagnostic: edge-triggered log each time the tether "active" gate flips.
+    // Shows WHY the rope may not run (threads off? never DRAGGING?). Fires only
+    // on a state change, and visibility is governed by Windhawk's own Wh_Log
+    // gate (the old in-mod "Verbose debug logging" switch no longer exists).
     static bool s_prevInDrag = false;
     if (inDrag != s_prevInDrag) {
         Wh_Log(L"TETHER-DBG inDrag=%d state=%d fromDock=%d idx=%d threadsOn=%d dropZone=%d",

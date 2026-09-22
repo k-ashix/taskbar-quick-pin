@@ -39,10 +39,31 @@ static void test_error_stops_without_repost() {
     CHECK(DecideRenameLoopAction(/*getMessageResult=*/-1) == RENAME_LOOP_STOP);
 }
 
+// ---- The leak: BOTH terminating paths must destroy the dialog before leaving
+//      the nested loop. The old code destroyed it on WM_QUIT (0) but broke out
+//      of the -1 error path WITHOUT destroying it, leaking a window whose
+//      RenameDialogState* pointed at a stack frame about to unwind. ----------
+
+static void test_wm_quit_destroys_dialog() {
+    CHECK(RenameLoopShouldDestroyDialog(DecideRenameLoopAction(/*got=*/0)) == true);
+}
+
+static void test_error_also_destroys_dialog() {
+    // This is the regression the review flagged: -1 (error) must also destroy.
+    CHECK(RenameLoopShouldDestroyDialog(DecideRenameLoopAction(/*got=*/-1)) == true);
+}
+
+static void test_pump_keeps_dialog_alive() {
+    CHECK(RenameLoopShouldDestroyDialog(DecideRenameLoopAction(/*got=*/1)) == false);
+}
+
 int main() {
     test_wm_quit_repost();
     test_normal_message_pumps();
     test_error_stops_without_repost();
+    test_wm_quit_destroys_dialog();
+    test_error_also_destroys_dialog();
+    test_pump_keeps_dialog_alive();
 
     if (g_failures == 0) {
         std::printf("rename_dialog_quit: ALL PASS\n");

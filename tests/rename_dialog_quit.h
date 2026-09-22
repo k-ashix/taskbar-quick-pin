@@ -37,4 +37,16 @@ static inline RenameLoopAction DecideRenameLoopAction(int getMessageResult) {
     return RENAME_LOOP_PUMP;                                     // normal message
 }
 
+// Whether the nested modal loop, when it STOPS looping for a given action, must
+// DestroyWindow(dlg) first. Contract (leak fix): both terminating actions --
+// WM_QUIT (RENAME_LOOP_QUIT_REPOST) and error (RENAME_LOOP_STOP) -- exit the
+// nested loop while the dialog's RenameDialogState* still points at a stack
+// frame that is about to unwind. Both MUST tear the dialog down before leaving.
+// Only RENAME_LOOP_PUMP keeps the dialog alive (the loop continues). The old
+// code destroyed the dialog on WM_QUIT but broke out of the -1 error path
+// WITHOUT destroying it, leaking a window bound to a dead stack frame.
+static inline bool RenameLoopShouldDestroyDialog(RenameLoopAction action) {
+    return action == RENAME_LOOP_QUIT_REPOST || action == RENAME_LOOP_STOP;
+}
+
 #endif  // TASKBAR_QUICK_PIN_RENAME_DIALOG_QUIT_H

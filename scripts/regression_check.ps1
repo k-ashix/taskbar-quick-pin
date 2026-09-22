@@ -143,6 +143,23 @@ AssertPresent "DISOWN posts WM_QUIT to UI thread" 'QP_STARTUP_DISOWN[\s\S]{0,900
 AssertPresent "Windows 11 (build >= 22000) init gate" '22000'
 AssertPresent "QpIsWindows11OrGreater helper"          'QpIsWindows11OrGreater'
 
+Head "PART 2f: rename dialog leak -- error path (got==-1) must destroy the dialog"
+# PromptWorkspaceName's nested modal loop: BOTH terminating GetMessageW results
+# must DestroyWindow(dlg) before leaving, or the dialog leaks a window whose
+# RenameDialogState* points at a stack frame about to unwind. The WM_QUIT path
+# (got==0) already destroys; this asserts the error path (got==-1) does too --
+# i.e. the -1 branch is no longer a bare `break;`.
+AssertPresent "rename loop destroys dialog on got==-1 (error)" 'got\s*==\s*-1\s*\)\s*\{[\s\S]{0,600}DestroyWindow\(dlg\)[\s\S]{0,40}break'
+
+Head "PART 2g: Layer1 explorer guard uses IsExplorerExePath (not whole-path StrStrIW)"
+# Resolver_Layer1_UIHit must decide "is this explorer.exe" by FILENAME
+# (IsExplorerExePath -> PathFindFileNameW + _wcsicmp), not by a whole-path
+# substring match (StrStrIW(result, "explorer.exe")) which false-matches paths
+# that merely contain the text. Assert the correct call is present in the
+# resolver and the sloppy substring form is gone.
+AssertPresent "Layer1 uses IsExplorerExePath(result)" 'Resolver_Layer1_UIHit[\s\S]{0,900}IsExplorerExePath\(result\)'
+AssertAbsent  "Layer1 no whole-path StrStrIW explorer.exe" 'StrStrIW\(result\.c_str\(\),\s*L"explorer\.exe"\)'
+
 Head "PART 2e: README documents the (now Windhawk-native) logging toggle"
 if (Test-Path $ReadmeFile) {
     $readme = Get-Content -Path $ReadmeFile -Raw
