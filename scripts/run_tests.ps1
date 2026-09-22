@@ -37,6 +37,7 @@
     Options:
         -KeepBinaries       keep the compiled exes in tests\build\ for debugging
         -SkipBalanceCheck   do NOT run check_balance.ps1 after the tests
+        -SkipEmptyBodyCheck do NOT run check_empty_body.ps1 after the tests
         -ShowPass           also print per-test PASS lines to the terminal
         -Compiler g++       choose the C++ compiler (default: g++)
         -Std c++17          choose the language standard (default: c++17)
@@ -46,6 +47,9 @@
 param(
     [switch]$KeepBinaries,
     [switch]$SkipBalanceCheck,
+    [switch]$SkipLogLayerCheck,
+    [switch]$SkipEmptyBodyCheck,
+    [switch]$SkipRegressionCheck,
     [switch]$ShowPass,
     [string]$Compiler = "g++",
     [string]$Std = "c++17"
@@ -62,7 +66,9 @@ $BuildDir  = Join-Path $TestsDir "build"
 
 # --- Timestamped transcript log in the repo root -------------------------
 # Filename form: test_result_run_HH_MM_AM.log / ..._PM.log  (12-hour clock).
-$stamp   = (Get-Date).ToString("hh_mm_tt").ToUpper()
+# Include seconds so two runs in the same minute (e.g. a nested invocation)
+# never write to the SAME file and clobber each other's transcript.
+$stamp   = (Get-Date).ToString("hh_mm_ss_tt").ToUpper()
 $LogFile = Join-Path $RepoRoot ("test_result_run_{0}.log" -f $stamp)
 
 # Everything the run "says" is funnelled through Write-Log. Terminal output is
@@ -181,26 +187,91 @@ if (-not $KeepBinaries) {
 # Runs the project's balance check so a single `run_tests.ps1` invocation does
 # both. It is best-effort: a missing script only warns, and it never overrides
 # a test failure. Skip it with -SkipBalanceCheck (e.g. in CI).
-if (-not $SkipBalanceCheck) {
-    $BalanceScript = Join-Path $ScriptDir "check_balance.ps1"
-    if (Test-Path $BalanceScript) {
-        Write-Log ("-" * 60)
-        Write-Log "Running check_balance.ps1 ..."
-        # Capture balance output into the log; keep the terminal quiet.
-        $balanceOut = & powershell -ExecutionPolicy Bypass -File $BalanceScript 2>&1
-        $balanceExit = $LASTEXITCODE
-        $balanceOut | ForEach-Object { Write-Log ("    $_") }
-        if ($balanceExit -ne 0) {
-            Write-Log ("check_balance.ps1 reported an imbalance (exit {0}) -- see log." -f $balanceExit) -Color Yellow -ToConsole
-        } else {
-            Write-Log "check_balance.ps1: OK (balanced)."
-        }
+# --------------------------------------------------------------------------
+# Post-test auto-chain: one `run_tests.ps1` invocation runs the whole gate.
+#   1. check_log_layer.ps1   -- single-Wh_Log-surface lint
+#   2. check_empty_body.ps1  -- empty-body control-statement lint
+#   3. check_balance.ps1     -- delimiter balance sanity check
+#   4. regression_check.ps1  -- source-invariant regression gate (PART 2 only;
+#                               -SkipUnitTests, since WE are the unit tests)
+# Each is best-effort (a missing script only warns) but a real failure flips
+# $extraFailed so the overall exit code is non-zero (CI treats it as a fail).
+#
+# RECURSION NOTE: regression_check.ps1 calls THIS script to run the unit tests.
+# To avoid an infinite loop it passes -SkipRegressionCheck (and skips the other
+# sub-checks, which it runs itself). So: when invoked from the gate, we do NOT
+# re-invoke the gate.
+# --------------------------------------------------------------------------
+$extraFailed = 0
+$subCheckStatuses = [ordered]@{}
+
+function Invoke-SubCheck {
+    # NOTE: the param is $ExtraArgs, NOT $Args. $Args is a PowerShell AUTOMATIC
+    # variable; using it as a param name does not bind reliably, which silently
+    # dropped the -SkipUnitTests we pass to the regression gate and caused a
+    # nested unit run (and a same-minute log-file collision). Do not rename back.
+    param([string]$ScriptName, [string]$Label, [string[]]$ExtraArgs = @())
+    $path = Join-Path $ScriptDir $ScriptName
+    if (-not (Test-Path $path)) {
+        Write-Log ("{0} not found at {1} (skipping)." -f $ScriptName, $path) -Color Yellow -ToConsole
+        $script:subCheckStatuses[$Label] = "SKIPPED (missing)"
+        return
+    }
+    Write-Log ("-" * 60)
+    Write-Log ("Running {0} ..." -f $ScriptName)
+    $out = & powershell -ExecutionPolicy Bypass -File $path @ExtraArgs 2>&1
+    $code = $LASTEXITCODE
+    $out | ForEach-Object { Write-Log ("    $_") }
+    if ($code -ne 0) {
+        Write-Log ("{0}: FAIL (exit {1}) -- see log." -f $Label, $code) -Color Red -ToConsole
+        $script:subCheckStatuses[$Label] = "FAIL (exit $code)"
+        $script:extraFailed++
     } else {
-        Write-Log ("check_balance.ps1 not found at {0} (skipping)." -f $BalanceScript) -Color Yellow -ToConsole
+        Write-Log ("{0}: OK." -f $Label)
+        $script:subCheckStatuses[$Label] = "PASS"
     }
 }
 
-Write-Host ("Done. Full transcript: {0}" -f $LogFile) -ForegroundColor Cyan
+if (-not $SkipLogLayerCheck) {
+    Invoke-SubCheck "check_log_layer.ps1" "log-layer guard"
+    Invoke-SubCheck "..\tests\check_log_layer_guard_self_test.ps1" "log-layer guard self-test"
+} else {
+    $subCheckStatuses["log-layer guard"] = "SKIPPED"
+    $subCheckStatuses["log-layer guard self-test"] = "SKIPPED"
+}
 
-# Non-zero exit if anything failed (useful for CI).
-if ($failed -ne 0) { exit 1 } else { exit 0 }
+if (-not $SkipEmptyBodyCheck) {
+    Invoke-SubCheck "check_empty_body.ps1" "empty-body guard"
+    Invoke-SubCheck "..\tests\check_empty_body_guard_self_test.ps1" "empty-body guard self-test"
+} else {
+    $subCheckStatuses["empty-body guard"] = "SKIPPED"
+    $subCheckStatuses["empty-body guard self-test"] = "SKIPPED"
+}
+
+if (-not $SkipBalanceCheck) {
+    Invoke-SubCheck "check_balance.ps1" "balance check"
+} else {
+    $subCheckStatuses["balance check"] = "SKIPPED"
+}
+
+if (-not $SkipRegressionCheck) {
+    # -SkipUnitTests: the gate's PART 1 is exactly this run; only run its
+    # source-invariant checks (PART 2) to avoid re-running the suite.
+    Invoke-SubCheck "regression_check.ps1" "regression gate" @("-SkipUnitTests")
+} else {
+    $subCheckStatuses["regression gate"] = "SKIPPED"
+}
+
+$overallPassed = ($failed -eq 0 -and $extraFailed -eq 0)
+Write-Log ("=" * 60)
+Write-Log "FINAL SUMMARY" -ToConsole
+Write-Log ("Unit tests : {0} passed, {1} failed, {2} total" -f $passed, $failed, $tests.Count) -ToConsole
+foreach ($entry in $subCheckStatuses.GetEnumerator()) {
+    Write-Log ("{0,-27}: {1}" -f $entry.Key, $entry.Value) -ToConsole
+}
+Write-Log ("Sub-checks : {0} enabled failure(s)" -f $extraFailed) -ToConsole
+Write-Log ("Transcript : {0}" -f $LogFile) -ToConsole
+Write-Log ("OVERALL    : {0}" -f $(if ($overallPassed) { "PASS" } else { "FAIL" })) -Color ($(if ($overallPassed) { "Green" } else { "Red" })) -ToConsole
+
+# Non-zero exit if any unit test OR any auto-chained sub-check failed (CI).
+if ($overallPassed) { exit 0 } else { exit 1 }

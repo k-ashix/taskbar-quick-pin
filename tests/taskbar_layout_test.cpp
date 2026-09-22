@@ -106,12 +106,13 @@ static void test_degenerate_taskbar_rect_is_pending() {
     CHECK(DecideTaskbarLayout(/*tbrLeft*/100, /*tbrRight*/50, 120, GAP, DOCKW, MINROOM) == LAYOUT_PENDING);
 }
 
-static void test_start_at_or_left_of_taskbar_left_is_pending() {
-    // startLeft == tbrLeft or < tbrLeft is not a trustworthy detection ->
-    // PENDING (keep retrying), NOT UNSUPPORTED. This is the key distinction: a
-    // failed Start probe during cold boot must not permanently disable the dock.
-    CHECK(DecideTaskbarLayout(0, 1920, /*startLeft*/0,  GAP, DOCKW, MINROOM) == LAYOUT_PENDING);
-    CHECK(DecideTaskbarLayout(0, 1920, /*startLeft*/-5, GAP, DOCKW, MINROOM) == LAYOUT_PENDING);
+static void test_start_at_left_of_taskbar_is_unsupported() {
+    // startLeft == tbrLeft: Start confirmed at left edge = left-aligned taskbar.
+    // This is a DETECTED state, not a failed probe -- must be UNSUPPORTED so the
+    // worker settles to idle instead of spinning at 100 ms forever.
+    CHECK(DecideTaskbarLayout(0, 1920, /*startLeft*/0,  GAP, DOCKW, MINROOM) == LAYOUT_UNSUPPORTED);
+    // startLeft < tbrLeft is equally a confirmed left-aligned (or worse) layout.
+    CHECK(DecideTaskbarLayout(0, 1920, /*startLeft*/-5, GAP, DOCKW, MINROOM) == LAYOUT_UNSUPPORTED);
 }
 
 static void test_start_at_or_right_of_taskbar_right_is_pending() {
@@ -147,7 +148,7 @@ int main() {
     test_room_one_less_than_need_is_unsupported();
     test_small_dock_needs_only_its_own_width();
     test_degenerate_taskbar_rect_is_pending();
-    test_start_at_or_left_of_taskbar_left_is_pending();
+    test_start_at_left_of_taskbar_is_unsupported();
     test_start_at_or_right_of_taskbar_right_is_pending();
     test_negative_gap_is_treated_as_zero();
     test_zero_minroom_still_needs_one_pixel();

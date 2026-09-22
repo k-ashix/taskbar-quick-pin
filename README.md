@@ -211,7 +211,6 @@ All settings live in the Windhawk settings panel under this mod. **Most apply in
 | **Icon size** | How big each icon is (before your display scaling). 16–48. At 150% scaling, `33` looks like ~50 px. | `33` |
 | **Dock gap from Start** | How far the whole dock sits from the Start button, 0–40 px. | `6` |
 | **Separator opacity** | Visibility of the little divider line between the dock and the rest of the taskbar. 0 = hidden, 100 = solid. | `100` |
-| **Glass overlay** | Draws a subtle frosted-glass tint behind the dock, and gives richer pin/unpin colour feedback. | `on` |
 | **Drag to reorder** | Lets you drag icons left/right to rearrange them. Off = dragging an icon only unpins it. | `on` |
 | **Double-right-click to unpin** | Unpin an icon by double-right-clicking it (with a dust effect). Off = normal right-click menu shows instead. | `off` |
 | **Scroll-wheel navigation** | Hover + scroll to move the highlight across your pins. | `on` |
@@ -224,7 +223,7 @@ All settings live in the Windhawk settings panel under this mod. **Most apply in
 | **Multi-monitor dock** | Show a **mirrored, read-only** dock on each secondary monitor. Only the primary supports pinning. *(Reload to apply.)* | `off` |
 | **Startup delay** | Extra wait before the dock loads, 0–3000 ms. Raise it if the dock appears in the wrong spot at login. | `0` |
 | **Sync with taskbar auto-hide** | Hide the dock along with the taskbar when auto-hide slides it off screen. | `off` |
-| **Verbose logging** | Emit the high-frequency drag/reorder + debug traces to the Windhawk log. Leave off to keep the log quiet — only errors and key events are logged. Troubleshooting only. | `off` |
+| **Verbose debug logging** | Emit the high-frequency drag/reorder + debug traces to the Windhawk log. Leave off to keep the log quiet — only errors and key events are logged. Troubleshooting only. | `off` |
 | **Pin hotkey — modifiers** | Which modifier keys to hold for the pin/unpin hotkey. Set to "Disabled" to switch the hotkey off. | `Ctrl + Alt` |
 | **Pin hotkey — key** | Which key to press with the modifiers above. | `P` |
 
@@ -441,7 +440,7 @@ A separate layered window (`g_tetherWnd` / `g_tetherDIB` / `g_tetherBits`) draws
 - The moving tip is spring-smoothed (`THREAD_SPRING = 0.42`, frame-rate scaled) for a lively whip lag.
 - `THREAD_MAX_STRETCH_PX` (= `dragRopeBreakLength`, 150–650) is the max length. Past it the rope **tears mid-thread** (`g_tetherBreaking`, frozen anchor/tip) and fires the unpin + dust vanish.
 - Released before breaking with `unpinTrigger = 0` → the rope **retracts** (`g_tetherRetracting`) and the icon stays pinned. With `unpinTrigger = 1`, dropping anywhere off the dock also unpins.
-- Appearance: `THREAD_THICKNESS` (1–10), colour mode/hue (`THREAD_COLOR_MODE`, `THREAD_HUE`, default earthy tan). The window is pre-warmed at init (`PrewarmLayered`) to avoid first-use lag.
+- Appearance: `THREAD_THICKNESS` (1–10) and hue (`THREAD_HUE`, default earthy tan). The rope is always a single earthy colour. The window is pre-warmed at init (`PrewarmLayered`) to avoid first-use lag.
 
 ---
 
@@ -463,7 +462,6 @@ The app region resizes to fit: never below `MIN_APP_SLOTS` (5), never above `MAX
 
 `WM_PAINT` draws all icons into a persistent off-screen buffer (`g_alphaBlendDC`/`g_alphaBlendBmp`) then blits once. Per icon: position + hover scale, `DrawIconEx` at `opacity*255`, running dot, lifted-source dimming, drop-zone highlight, and the limit flash.
 
-- **Glass** (`enableGlassOverlay`): DWM system-backdrop when available, else a manual GDI alpha rectangle.
 - **Rounded corners** (`cornerRoundness` 0–100): DWM corner attribute (`DWMWCP_DONOTROUND` / `ROUNDSMALL` / `ROUND`) plus a continuous clip radius `= (h * 0.5) * (roundness / 100)`, so it's smooth and live-updatable, never pixelated.
 - **Separator** (`separatorOpacity`): 0 = none, 100 = solid `LineTo`, 1–99 = cached DIB alpha-blended column.
 

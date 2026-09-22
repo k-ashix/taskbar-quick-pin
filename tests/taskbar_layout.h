@@ -51,16 +51,21 @@ enum LayoutDecision {
 //     If that room can hold at least min(dockWidth, minRoom) pixels, it's OK;
 //     if Start hugs the left edge so the room is smaller than that, it's the
 //     UNSUPPORTED left-aligned layout.
+// Contract updated: startLeft == tbrLeft (or less) means Start is CONFIRMED at
+// the left edge -- the left-aligned layout is detected, return UNSUPPORTED.
+// startLeft >= tbrRight is an impossible/failed probe -- return PENDING.
+// Previously both were lumped into a single PENDING, which let a cold-start
+// failed probe silence a genuine left-aligned taskbar (Issue 3a fix).
 static inline LayoutDecision DecideTaskbarLayout(long tbrLeft, long tbrRight,
                                                  long startLeft,
                                                  int dockGapPx, int dockWidth,
                                                  int minRoom) {
     // Degenerate / not-ready taskbar geometry.
     if (tbrRight <= tbrLeft) return LAYOUT_PENDING;
-    // Start edge must be a sane value strictly inside the taskbar. A Start edge
-    // at/left-of tbrLeft, or at/right-of tbrRight, means detection hasn't
-    // produced a trustworthy value yet.
-    if (startLeft <= tbrLeft || startLeft >= tbrRight) return LAYOUT_PENDING;
+    // startLeft >= tbrRight: nonsensical -- probe not ready, keep retrying.
+    if (startLeft >= tbrRight) return LAYOUT_PENDING;
+    // startLeft <= tbrLeft: Start confirmed at/left-of left edge = left-aligned.
+    if (startLeft <= tbrLeft)  return LAYOUT_UNSUPPORTED;
 
     if (dockGapPx < 0) dockGapPx = 0;
 
