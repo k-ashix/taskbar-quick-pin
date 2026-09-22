@@ -5,13 +5,21 @@
 **Your own mini app dock, tucked neatly to the left of the Start button.**
 
 [![Windhawk Mod](https://img.shields.io/badge/Windhawk_Mod-taskbar--quick--pin-blue.svg)](https://windhawk.net/mods/taskbar-quick-pin)
-[![Version](https://img.shields.io/badge/version-v2.5.0-success.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-v2.5.1-success.svg)](#changelog)
 [![Platform](https://img.shields.io/badge/Windows-11-0078D6.svg)](#)
 [![Build](https://img.shields.io/badge/build-single--file_C%2B%2B-lightgrey.svg)](#)
+
+<br/>
+
+<img src="src/preview.gif" alt="Left Taskbar Quick Pin Dock — live demo" width="760" />
 
 </div>
 
 Pin any app with a **drag**. **Click** it to launch or focus. **Drag it off** to let it go. That's the whole idea — a fast, good-looking launcher that lives right inside your Windows 11 taskbar and remembers your apps across restarts.
+
+> ## ⚠️ Only for Windows 11 with a *centered* taskbar
+>
+> **This mod supports Windows 11 only, and only when the taskbar is *centered* (the default) — i.e. the Start button sits in the middle.** On a **left-aligned** (or otherwise repositioned) taskbar there is no room to the left of Start, so the dock detects the unsupported layout and stays hidden. Windows 10 is not supported.
 
 > 🪶 **Lightweight by design.** One single-file C++ mod that runs as a Windhawk **tool mod** in its own `windhawk.exe` process — no extra DLLs, no background service, no installer, and a fault can't take the shell down with it. It never moves or resizes your taskbar; it simply floats a transparent dock on top of it.
 
@@ -258,13 +266,58 @@ Some UWP apps briefly report their host process if their window isn't ready. Try
 **My gesture didn't unpin anything.**
 Check whether the dock is **locked** (you'll see a glow flash when you try). Tap **L** three times to unlock. Remember: while locked, only a rope-breaking drag-off unpins.
 
+**I saw two docks / clicks stopped working after opening a File Explorer window.**
+Fixed in **v2.5.1**. Opening a pinned File Explorer window spawned a second `explorer.exe` that drew its own dock and fought the first for clicks. Update to 2.5.1 and reload the mod.
+
+**Clicking a pinned icon sometimes does nothing.**
+Fixed in **v2.5.1**. A quick click right after another window took focus could be misread as "too slow" and dropped. In 2.5.1 a click is decided by movement, not timing, so every click launches or focuses. Update and reload the mod.
+
 ---
 
 ## 10. Known limitations
 
+- **Windows 11 with a *centered* taskbar only.** The dock lives in the gap to the left of a centered Start button. On a **left-aligned** taskbar that gap doesn't exist, so the mod detects the unsupported layout and hides the dock; switch Start back to *centered* to use it. Windows 10 is not supported.
 - **Secondary-monitor docks are mirrored and read-only** — *Beta*. Only the primary dock can pin/unpin.
 - **A few apps show a generic Windows icon** — a shell limitation; no Win32 API resolves every icon reliably.
 - **Some UWP apps may resolve to their host process** if their window isn't ready when you drag them.
+
+### Behavioural notes (tracked, not yet addressed)
+
+These are known rough edges from the code review. They are not blocking and are
+documented here so the behaviour is expected rather than surprising:
+
+- **English-only UI-string matching.** Explorer integration (workspace pins,
+  new-tab restore, tab/window-title matching) matches literal English UI strings
+  such as `File Explorer` and `New tab`. On a non-English Windows these paths
+  silently do nothing. A future fix would key off UIA `AutomationId`s where
+  available instead of localised names.
+- **Start-button detection is heuristic.** Start is located by a loose class
+  match (`Start` / `InputSite`) plus a left-half taskbar position guess, so on an
+  unusual taskbar layout it can latch onto the wrong element.
+- **Mixed-DPI multi-monitor sizing.** All docks are sized from the *primary*
+  taskbar's DPI, so on a mixed-DPI multi-monitor setup the mirror docks can be
+  scaled for the wrong monitor. (Multi-monitor is already flagged *Beta*.)
+- **Turning off multi-monitor docks needs a reload.** Disabling the
+  `multiMonitorDock` setting doesn't tear down docks already on secondary
+  monitors; reload the mod (or restart Explorer) to clear them.
+- **Per-frame region rebuild during dock glide.** The rounded-corner window
+  region is rebuilt every animation frame, which is cheap but not free; caching
+  it is a tracked performance follow-up.
+- **Bare-key P / U / L gestures react everywhere.** When enabled (off by
+  default), these poll the raw key state globally, so they fire in any focused
+  app — including text and password fields. Prefer the `Ctrl+Alt` hotkeys unless
+  you specifically want the bare-key gestures, and read the setting's warning.
+  *(Note: these gestures now run even before the dock's overlay window is up —
+  see the changelog fix below — so enabling the setting is all that's required.)*
+- **Explorer workspace-restore is UIA-driven and slow.** Restoring a folder
+  group drives Explorer's UI through UI Automation with polling waits (up to a
+  few seconds per tab) and is inherently fragile against Explorer UI changes;
+  no faster public API exists today.
+
+*Fixed in this revision: the Layer-3 app-identity fallback now only resolves a
+window the cursor is actually inside (no more "wrong neighbouring app" pins);
+focus-if-running skips tool/untitled windows so it targets a real app window;
+and workspace IDs are now GUID-based, removing the same-second collision risk.*
 
 ---
 ---
@@ -438,13 +491,13 @@ HKEY_CURRENT_USER\Software\WindhawkMods\taskbar-quick-pin
 - **`IsSystemWindow`** rejects Explorer, `SearchHost`, `ShellExperienceHost`, `StartMenuExperienceHost`, `LogonUI`, and classes `Progman` / `Shell_TrayWnd` / `WorkerW`.
 - **`IsExcludedApp`** rejects `RuntimeBroker`, `WerFault`, `CredentialUIBroker`, `ApplicationFrameHost` (the hosted UWP app is used instead). `explorer.exe` is excluded unless `enableExplorerWorkspacePins` is on.
 - **Icon quality guard** rejects blank/hidden icons and the shell's generic placeholder silhouette.
-- **Duplicate guard** (`IsPinned`) and **capacity guard** (`MaxIconsFit()` vs `maxPinnedApps`, with the limit flash on overflow).
+- **Duplicate guard** (`IsPinned`) and **capacity guard** (app-pin count vs the `maxPinnedApps` setting, i.e. `min(MAX_APP_PINS, MAX_PINNED_APPS)`, with `TriggerLimitFlash()` on overflow).
 
 ---
 
 ## 24. Hooks, build flags & dependencies
 
-**No Win32 API hooks.** The mod only uses `RegisterHotKey`, in-process `IUIAutomation`, `GetAsyncKeyState` polling, and `SHAppBarMessage` (auto-hide) — plus its own layered top-level windows. (There is no `SetWinEventHook`; taskbar geometry comes purely from the worker's polling FSM.) If it ever crashes, Explorer simply unloads the DLL and the dock disappears — no trampoline risk.
+**No Win32 API hooks.** The mod only uses `RegisterHotKey`, in-process `IUIAutomation`, `GetAsyncKeyState` polling, and `SHAppBarMessage` (auto-hide) — plus its own layered top-level windows. (There is no `SetWinEventHook`; taskbar geometry comes purely from the worker's polling FSM.) Because it runs as a **tool mod** in its own `windhawk.exe` process (not injected into `explorer.exe`), a crash only tears down that process — the shell is unaffected and the dock simply disappears. No trampoline risk.
 
 ```
 @compilerOptions -lshell32 -lole32 -loleaut32 -luuid -lshlwapi
@@ -461,11 +514,25 @@ Contributions welcome — bug reports, docs, and features.
 
 - **Issues:** [ramensoftware/windhawk-mods](https://github.com/ramensoftware/windhawk-mods/issues).
 - **Pull requests:** keep the single-file structure, respect the thread-safety rules in §12, and make sure GDI resources are created once and freed in `Wh_ModUninit` (in reverse order). Be extremely careful adding any new cross-thread shared state — route it through `g_cs` or interlocked globals like the vanish request path.
-- The codebase has zero external dependencies and runs entirely inside `explorer.exe`. Avoid hooking Win32 functions.
+- The codebase has zero external dependencies and runs as a **tool mod** in its own `windhawk.exe` process — it is **not** injected into `explorer.exe`. Avoid hooking Win32 functions.
 
 ---
 
-## Changelog
+### v2.5.1
+
+- ⚡ **Code optimised & lower memory usage.** — No behavioural change,
+  just leaner and lighter.
+- 🪜 **New 5-stage resolve pipeline to cut resource usage.** App identity is now
+  settled through five ordered stages.
+  1. **Cache hit** — Reuse the last resolved identity for the window/point (no work).
+  2. **Fast window probe** — Cheap `Get*`/class checks before any heavyweight call.
+  3. **UIAutomation resolve** — The authoritative taskbar-surface lookup, only if 1–2 miss.
+  4. **Process fallback** — Cursor-inside process match when UIA can't name the target.
+  5. **Miss / sentinel** — Give up cleanly (no pin) instead of guessing wrong.
+- 🔁 **Workspace pins re-open every time.** — A Pinned workspace dock icon now resolves to the `"Explorer workspace"`.
+- ⌨️ **Bare-key P / U / L gestures now work when enabled.** — These gestures act on the foreground window.
+- 🪟 **Focus-if-running targets a real window.** — Improved
+- 🆔 **Collision-free workspace IDs.** `MakeWorkspaceId` now uses `CoCreateGuid`
 
 ### v2.5.0
 
