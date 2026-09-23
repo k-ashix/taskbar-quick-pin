@@ -134,12 +134,14 @@ Head "PART 2c: Issue 2 -- unsupported-layout branch is not a busy loop"
 AssertPresent "unsupported branch waits on g_exitEvent" 'g_layoutUnsupported[\s\S]{0,120}WaitForSingleObject\(g_exitEvent'
 AssertPresent "unsupported branch releases hi-res timer" 'g_layoutUnsupported[\s\S]{0,120}SetHighResTimer\(false\)'
 
-Head "PART 2d: Issue 3 -- visibility gated; nothing shown 'first'"
-# RepositionOverlay must gate on ownership before showing anything.
-AssertPresent "RepositionOverlay guards on g_dockOwnershipDecided" 'RepositionOverlay\(\)[\s\S]{0,400}g_dockOwnershipDecided'
-# DISOWN worker branch tears the UI thread down.
-AssertPresent "DISOWN posts WM_QUIT to UI thread" 'QP_STARTUP_DISOWN[\s\S]{0,900}PostThreadMessageW\(g_uiThreadId,\s*WM_QUIT'
-# Windows 11 build gate present in Wh_ModInit.
+Head "PART 2d: Issue 3 -- visibility gated on VALID GEOMETRY (no ownership gate)"
+# As a tool mod there is no Explorer-ownership gate any more; visibility is gated
+# purely on valid geometry. RepositionOverlay must keep both windows hidden until
+# the worker has produced a real dock width (g_dockLocalW > 0) -- so no 1/255-alpha
+# input window sits in the top-left swallowing clicks and no mini-dock flashes on
+# a cold start.
+AssertPresent "RepositionOverlay stays hidden until valid geometry" 'void RepositionOverlay\(\)[\s\S]{0,2600}if \(g_dockLocalW <= 0\) \{'
+# Windows 11 build gate present in the init path.
 AssertPresent "Windows 11 (build >= 22000) init gate" '22000'
 AssertPresent "QpIsWindows11OrGreater helper"          'QpIsWindows11OrGreater'
 
@@ -168,6 +170,94 @@ if (Test-Path $ReadmeFile) {
 } else {
     Bad "README.md not found"
 }
+
+Head "PART 2h: Issue 1B -- Start-button probe reports not-found (no 1/5 estimate)"
+# GetStartButtonLeftEdge must return an explicit found/not-found result via an
+# out-param, so an unresolved Start stays QP_LAYOUT_PENDING instead of adopting a
+# fabricated tbRect.left + (tbRect.right - tbRect.left) / 5 edge. Assert the new
+# bool/out-param signature exists and the old 1/5 fallback is gone.
+# (Pure decision mirrored + unit-tested in tests/start_edge_probe.h.)
+AssertPresent "GetStartButtonLeftEdge bool out-param signature" 'bool\s+GetStartButtonLeftEdge\s*\(\s*HWND\s+taskbar\s*,\s*const\s+RECT&\s+tbRect\s*,\s*LONG\*\s*outLeft\s*\)'
+AssertAbsent  "no fabricated 1/5-width Start fallback" '\(tbRect\.right - tbRect\.left\) / 5'
+
+Head "PART 2i: spec 2 -- tool-mode taskbar lifecycle (Explorer restart survival)"
+# The tool process outlives Explorer, so HasTaskbarGeometryChanged must (a) treat
+# a vanished taskbar as a change while a stale dock still exists, and (b) treat a
+# brand-new Shell_TrayWnd handle as a change; and RefreshTaskbarCache must reset
+# to STATE_BOOT when the taskbar is gone so the dock re-resolves cleanly on return.
+# (Pure decision mirrored + unit-tested in tests/taskbar_lifecycle.h.)
+AssertPresent "HasTaskbarGeometryChanged detects taskbar loss" 'if \(!tb\) return \(g_cachedTaskbar != NULL\) \|\| \(g_dockLocalW > 0\);'
+AssertPresent "HasTaskbarGeometryChanged detects new Shell_TrayWnd handle" 'if \(tb != g_cachedTaskbar\) return true;'
+AssertPresent "RefreshTaskbarCache resets to STATE_BOOT on taskbar loss" 'if \(!tb\) \{[\s\S]{0,700}g_systemState\s*=\s*STATE_BOOT;'
+
+Head "PART 2j: spec 4 -- Explorer ownership machinery fully removed"
+# The tool launcher's mutex (windhawk-tool-mod_<id>) is the single-instance
+# mechanism now, so the old "which explorer.exe owns Shell_TrayWnd" tri-state must
+# be gone entirely -- it was the reason the previous tool prototype never
+# initialised.
+AssertAbsent "g_dockOwnershipDecided flag"     'g_dockOwnershipDecided'
+AssertAbsent "QpStartupOwnership enum"          'QpStartupOwnership'
+AssertAbsent "ProbeStartupOwnership() helper"   'ProbeStartupOwnership'
+AssertAbsent "QP_STARTUP_ constants"            'QP_STARTUP_'
+
+Head "PART 2k: spec 3/6 -- tool-mod migration (header, callbacks, launcher)"
+# The mod must be a Windhawk TOOL MOD: injected into windhawk.exe (not
+# explorer.exe), no @architecture directive, the three callbacks renamed to
+# WhTool_*, and the official launcher boilerplate pasted in.
+AssertPresent "@include windhawk.exe directive" '(?m)^//\s*@include\s+windhawk\.exe'
+AssertAbsent  "no @include explorer.exe directive" '(?m)^//\s*@include\s+explorer\.exe'
+AssertAbsent  "no @architecture directive" '(?m)^//\s*@architecture\b'
+AssertPresent "WhTool_ModInit callback"           'WhTool_ModInit'
+AssertPresent "WhTool_ModSettingsChanged callback" 'WhTool_ModSettingsChanged'
+AssertPresent "WhTool_ModUninit callback"         'WhTool_ModUninit'
+# Official launcher boilerplate markers.
+AssertPresent "tool-mod launcher flag"       'g_isToolModProcessLauncher'
+AssertPresent "tool-mod dedicated-process arg" '-tool-mod'
+AssertPresent "tool-mod single-instance mutex" 'windhawk-tool-mod_'
+# (Launch-role decision mirrored + unit-tested in tests/tool_mod_launch_gate.h.)
+
+Head "PART 2l: cinematic lock/unlock flash -- per-pixel-alpha glow layer"
+# The old thin gold edge-stroke (DrawLockGlow, drawn on the colour-key overlay)
+# is replaced by a dramatic flash on its OWN per-pixel-alpha layered window, with
+# distinct LOCK (gold seal-in) vs UNLOCK (green release) effects. The kind is
+# derived from g_iconsLocked at trigger time, so NO 3x P/U/L gesture code was
+# touched. (Colour ramp / alpha envelope / geometry mirrored + unit-tested in
+# tests/lock_glow.h + tests/lock_glow_test.cpp.)
+AssertAbsent  "old thin-line DrawLockGlow retired"       'DrawLockGlow'
+AssertPresent "glow: distinct SEAL (lock) kind"          'LOCKGLOW_SEAL'
+AssertPresent "glow: distinct RELEASE (unlock) kind"     'LOCKGLOW_RELEASE'
+AssertPresent "glow: kind derived from lock state"       'g_lockGlowKind\s*=\s*LockGlowKindFromLocked\('
+AssertPresent "glow: per-pixel-alpha surface helper"     'EnsureLockGlowSurface'
+AssertPresent "glow: per-pixel-alpha frame renderer"     'RenderLockGlow'
+AssertPresent "glow: presented via UpdateLayeredWindow"  'UpdateLayeredWindow\(g_lockGlowWnd'
+AssertPresent "glow: own click-through window class"     'QPDockLockGlow'
+AssertPresent "glow: window torn down in uninit"         'DestroyWindow\(g_lockGlowWnd\)'
+AssertPresent "glow: DIB freed in uninit"                'DeleteObject\(g_lockGlowDIB\)'
+
+Head "PART 2m: glow confined to the dock (inside-only, rounded, calmer) + no dead code"
+# The glow now stays INSIDE the dock rect (no outward margin), follows the dock's
+# real rounded corners, softens the peak, and offers a left->right sweep vs an
+# edge-only highlight chosen by the enableLockAnimation setting (default OFF).
+# The old outward-spill ring (LOCK_GLOW_MARGIN) and unused LockGlowExpand01 are gone.
+AssertAbsent  "glow: outward-spill margin removed"       'LOCK_GLOW_MARGIN'
+AssertAbsent  "glow: dead LockGlowExpand01 removed"      'LockGlowExpand01'
+AssertPresent "glow: two render modes (sweep/edge)"      'LockGlowModeFromSetting'
+AssertPresent "glow: left->right sweep progress"         'LockGlowSweepX01'
+AssertPresent "glow: confinement predicate"              'LockGlowPixelAllowed'
+AssertPresent "glow: rounded-corner clip"                'LockGlowRoundRectSD'
+AssertPresent "glow: softened peak alpha"                'LOCKGLOW_PEAK_ALPHA'
+AssertPresent "glow: animation setting (default OFF)"    'enableLockAnimation'
+
+Head "PART 2n: fullscreen-app suppression hides the whole dock"
+# Like the taskbar, the dock (overlay + input + glow) fully hides while a
+# fullscreen app / exclusive presentation / secure snip overlay owns the screen,
+# with anti-flicker hysteresis so reappearing is seamless. Pure decision mirrored
+# in tests/fullscreen_suppress.h.
+AssertPresent "fullscreen: pure suppression decision"    'ShouldSuppressForFullscreen'
+AssertPresent "fullscreen: anti-flicker restore gate"    'FullscreenHideDecision'
+AssertPresent "fullscreen: sampled each poll"            'UpdateFullscreenState'
+AssertPresent "fullscreen: shell state query"            'SHQueryUserNotificationState'
+AssertPresent "fullscreen: gate acts on latched flag"    'g_fullscreenActive'
 
 # --------------------------------------------------------------------------
 # Verdict

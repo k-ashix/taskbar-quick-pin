@@ -5,7 +5,7 @@
 **Your own mini app dock, tucked neatly to the left of the Start button.**
 
 [![Windhawk Mod](https://img.shields.io/badge/Windhawk_Mod-taskbar--quick--pin-blue.svg)](https://windhawk.net/mods/taskbar-quick-pin)
-[![Version](https://img.shields.io/badge/version-v2.5.1-success.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-v2.5.3-success.svg)](#changelog)
 [![Platform](https://img.shields.io/badge/Windows-11-0078D6.svg)](#)
 [![Build](https://img.shields.io/badge/build-single--file_C%2B%2B-lightgrey.svg)](#)
 
@@ -211,6 +211,7 @@ All settings live in the Windhawk settings panel under this mod. **Most apply in
 | **Icon size** | How big each icon is (before your display scaling). 16–48. At 150% scaling, `33` looks like ~50 px. | `33` |
 | **Dock gap from Start** | How far the whole dock sits from the Start button, 0–40 px. | `6` |
 | **Separator opacity** | Visibility of the little divider line between the dock and the rest of the taskbar. 0 = hidden, 100 = solid. | `100` |
+| **Hide dock outline** | Makes the thin grey outline Windows 11 draws around the dock (on all sides) invisible. On = no border; off = system default. Purely cosmetic; applies live. | `off` |
 | **Drag to reorder** | Lets you drag icons left/right to rearrange them. Off = dragging an icon only unpins it. | `on` |
 | **Double-right-click to unpin** | Unpin an icon by double-right-clicking it (with a dust effect). Off = normal right-click menu shows instead. | `off` |
 | **Scroll-wheel navigation** | Hover + scroll to move the highlight across your pins. | `on` |
@@ -515,6 +516,21 @@ Contributions welcome — bug reports, docs, and features.
 - The codebase has zero external dependencies and runs as a **tool mod** in its own `windhawk.exe` process — it is **not** injected into `explorer.exe`. Avoid hooking Win32 functions.
 
 ---
+
+### v2.5.3
+
+- 🪶 **Leaner tool-mod runtime.** — General optimisation of the tool-mod process.
+- ✨ **Drag-to-pin feedback layer.** — A glow bloom shows **green** ("there's room") or **red** ("dock full") while you drag an app toward the dock.
+- 🖥️ **Cleaner fullscreen & Snipping Tool handling.** — The dock hides smoothly under fullscreen apps and the Windows native Snipping Tool overlay, with anti-flicker so it reappears seamlessly.
+- 🎯 **Refined feedback behaviour.** — Dragging or deleting an already-pinned icon near the dock now stays calm in **both** pin-limit states (dock full or with room) — no false "dock full" flash for an app that is already pinned.
+- 🧱 **New "Hide dock outline" toggle** (`hideDockBorder`). — Turn off the thin grey Windows 11 outline drawn around the dock. Purely cosmetic; the dock, icons and rounded corners are unchanged.
+- 🎬 **Two lock/unlock flash animations, with a toggle** (`enableLockAnimation`). — **Off:** a brief highlight on the dock's real edge. **On:** a loading-style glow sweeps left → right across the whole dock. Colours unchanged (gold when locking, green when unlocking).
+- 🔧 **Some more stability & polish improvements.**
+
+### v2.5.2
+
+- 🏗️ **Architectural change** — the mod now `@include windhawk.exe`, running as a tool mod in its own dedicated process.
+- ⚡ **Code optimised.**
 
 ### v2.5.1
 
