@@ -6,8 +6,7 @@
 // @author          Ashix
 // @github          https://github.com/k-ashix
 // @twitter         https://x.com/k_ashix
-// @include         explorer.exe
-// @architecture    x86-64
+// @include         windhawk.exe
 // @compilerOptions -lshell32 -lole32 -loleaut32 -luuid -lshlwapi -lgdi32 -lmsimg32 -ldwmapi -lwinmm
 // ==/WindhawkMod==
 
@@ -417,7 +416,7 @@ static const float MAG_SPREAD_FACTOR      = 0.55f; // Neighbour spread: fraction
 static const float HOVER_SHIFT_SPEED      = 0.40f; // Ease speed for the horizontal spread offset (between scale-in/out for a settled feel)
 
 // ---- Balloon-thread ("cotton tether") tuning (decorative, one thread/icon) ----
-static bool        ENABLE_ICON_THREADS    = true;  // Master switch (user setting "enableDragTether"); loaded in Wh_ModInit
+static bool        ENABLE_ICON_THREADS    = true;  // Master switch (user setting "enableDragTether"); loaded in WhTool_ModInit
 static const float THREAD_SPRING          = 0.42f; // TUNED 0.30->0.42: snappier tip-follow so the rope tracks the cursor with a lively Blender-noodle whip (still lags slightly). Per 16ms; frame-rate scaled below.
 // FIX (tether often not rendering): the single 46px threshold made the thread
 // read taut AND begin fading/breaking almost immediately -- any real off-dock
@@ -426,21 +425,21 @@ static const float THREAD_SPRING          = 0.42f; // TUNED 0.30->0.42: snappier
 // straightens) and a much larger BREAK (where it actually snaps + fades). The
 // thread now stays visible for the whole realistic pull-off gesture.
 static const float THREAD_TAUT_PX         = 90.f;  // TUNED 60->90: bow straightens over a longer, more natural pull so the resting sag reads as a real hanging noodle before it goes taut.
-static float       THREAD_MAX_STRETCH_PX  = 450.f; // "dragRopeBreakLength" (user setting, 150..650 px): the rope's MAX length. Once the pull passes this the rope TEARS in the middle and unpins. Loaded in Wh_ModInit / Wh_ModSettingsChanged.
-static int         UNPIN_TRIGGER          = 0;     // "unpinTrigger": 0 = unpin ONLY when the rope breaks (release-without-break recoils + stays pinned); 1 = rope breaks OR icon released outside the dock. Loaded in Wh_ModInit / Wh_ModSettingsChanged.
+static float       THREAD_MAX_STRETCH_PX  = 450.f; // "dragRopeBreakLength" (user setting, 150..650 px): the rope's MAX length. Once the pull passes this the rope TEARS in the middle and unpins. Loaded in WhTool_ModInit / WhTool_ModSettingsChanged.
+static int         UNPIN_TRIGGER          = 0;     // "unpinTrigger": 0 = unpin ONLY when the rope breaks (release-without-break recoils + stays pinned); 1 = rope breaks OR icon released outside the dock. Loaded in WhTool_ModInit / WhTool_ModSettingsChanged.
 static const int   THREAD_BREAK_MS        = 340;   // Snap/recoil duration (raised 200->340 so the torn halves + fray + flash read as a real break, not a quick cut).
 static const float ROPE_BREAK_MARGIN_PX   = 12.f;  // Small over-stretch give: the rope tears only once pulled a little PAST its break length, so one boundary-straddling cursor sample can't fire an abrupt "mechanical" cut. Pairs with the strain build-up for an organic snap.
 
-// Drag-rope appearance (user settings; loaded in Wh_ModInit / Wh_ModSettingsChanged).
+// Drag-rope appearance (user settings; loaded in WhTool_ModInit / WhTool_ModSettingsChanged).
 static int  THREAD_THICKNESS  = 2;    // "dragTetherThickness" 1..6 (core stroke width)
 static int  THREAD_HUE        = 30;   // "dragTetherHue" 0..359; default 30 = warm tan/brown (earthy thread)
 
-// Interaction settings (user settings; loaded in Wh_ModInit / Wh_ModSettingsChanged).
+// Interaction settings (user settings; loaded in WhTool_ModInit / WhTool_ModSettingsChanged).
 static bool ENABLE_DOUBLE_RCLICK_UNPIN = false;  // "enableDoubleRightClickUnpin": double-right-click a pinned icon to unpin it (DEFAULT OFF)
 static bool ENABLE_RAPID_UNPIN_ALL     = false;  // "enableRapidUnpinAll": rapid triple-click in the dock zone unpins ALL pins (DEFAULT OFF, opt-in). Fixes accidental wipe from impatiently clicking a slow app.
 static bool ENABLE_KEY_GESTURES        = false;  // "enableKeyGestures": bare-key P/U/L triple-tap gestures (DEFAULT OFF, opt-in). The Ctrl+Alt+P hotkey covers pin/unpin without firing while typing.
 
-// User-configurable (clamped in Wh_ModInit)
+// User-configurable (clamped in WhTool_ModInit)
 static int  MAX_PINNED_APPS      = 5;
 static int  BASE_ICON_SIZE       = 33;
 static int  BASE_ICON_SPACING    = 12;
@@ -519,15 +518,6 @@ static SystemState g_systemState = STATE_BOOT;
 // of returning early every call and spinning in STATE_BOOT at 100 ms forever.
 static bool g_layoutUnsupported = false;
 
-// FIX (Issue 1): taskbar ownership is no longer a HARD init failure. On a cold
-// Explorer start / sign-in, Shell_TrayWnd may not exist yet when Wh_ModInit
-// runs, so the owner PID resolves to 0. Rather than fail init (which left the
-// one true shell process without a dock), the mod initialises normally and the
-// worker thread re-probes ownership during STATE_BOOT. g_dockOwnershipDecided
-// flips true once the worker has positively resolved ownership; until then the
-// dock stays idle. A second explorer.exe that resolves a DIFFERENT owner is
-// still rejected in Wh_ModInit (STARTUP_DISOWN) so no duplicate dock is drawn.
-static bool g_dockOwnershipDecided = false;
 
 // ============================================================
 //  EXCLUDED APPS  --  system processes that must never be pinned
@@ -664,7 +654,7 @@ static int     g_idleFrames         = 0;
 // High-resolution frame timing.  GetTickCount() only has ~15.6 ms resolution,
 // which quantises g_frameDeltaMs to 0/15/16/31 ms and makes every lerp stutter.
 // QueryPerformanceCounter gives sub-microsecond deltas for smooth interpolation.
-static LARGE_INTEGER g_perfFreq      = {};    // ticks/sec, filled once in Wh_ModInit
+static LARGE_INTEGER g_perfFreq      = {};    // ticks/sec, filled once in WhTool_ModInit
 static LONGLONG      g_lastFrameQpc  = 0;      // QPC value at previous frame
 static bool          g_timerPeriodActive = false; // true while timeBeginPeriod(1) is held
 
@@ -762,7 +752,7 @@ static const DWORD SCROLL_NAV_LOCK_MS = 700; // How long a wheel-selected highli
 
 // Pin/unpin hotkey
 static const UINT HOTKEY_PIN_ID        = 1777;        // WM_HOTKEY wParam identifier
-// FIX (Issue 6): posted to the overlay window (from Wh_ModSettingsChanged) so the
+// FIX (Issue 6): posted to the overlay window (from WhTool_ModSettingsChanged) so the
 // global hotkey is re-registered on its OWNING thread when the user changes the
 // modifier/key setting -- RegisterHotKey/UnregisterHotKey must run on the thread
 // that created g_overlayWnd, so a settings-thread call would silently no-op.
@@ -803,7 +793,7 @@ static int g_reorderTargetIdx = -1;  // Current target slot
 static std::vector<PinnedApp> g_pinnedApps;
 
 // ============================================================
-//  GLOBALS  --  cached GDI objects (created once, freed in Wh_ModUninit)
+//  GLOBALS  --  cached GDI objects (created once, freed in WhTool_ModUninit)
 // ============================================================
 static HBRUSH  g_blackBrush    = NULL;
 static HPEN    g_linePenNormal = NULL;
@@ -855,9 +845,9 @@ static HANDLE  g_workerThread   = NULL;
 static HANDLE g_uiThread     = NULL;
 static DWORD  g_uiThreadId   = 0;
 static HANDLE g_uiReadyEvent = NULL;  // signaled by the UI thread once windows exist (or creation failed)
-static bool   g_uiInitOk     = false; // set by the UI thread; read by Wh_ModInit after the ready event
+static bool   g_uiInitOk     = false; // set by the UI thread; read by WhTool_ModInit after the ready event
 // FIX-B2 (#6) + review #4 (Bug A): LaunchWorkspaceAsync's threads are tracked so
-// Wh_ModUninit can join EVERY outstanding one before the mod image unloads. The
+// WhTool_ModUninit can join EVERY outstanding one before the mod image unloads. The
 // old single-slot design closed+overwrote a still-running thread's handle when a
 // second launch overlapped it, dropping the join point -- that thread then ran
 // mod code after FreeLibrary (return address in the unmapped image) and crashed
@@ -870,7 +860,7 @@ static bool                g_launchCsInit = false;
 static std::atomic<bool>   g_launchWorkspaceStop{false};
 // FIX-B3 (#3): the mod's own module handle. Window classes must be registered
 // with (and unregistered against) THIS handle, not GetModuleHandleW(NULL) which
-// returns explorer.exe. Populated in Wh_ModInit via GetModHInstance().
+// returns explorer.exe. Populated in WhTool_ModInit via GetModHInstance().
 static HINSTANCE g_hModule = NULL;
 // g_animationActive removed  --  was written but never read. g_anyAnimationActive is the live flag.
 
@@ -890,7 +880,7 @@ static HINSTANCE GetModHInstance() {
 
 // FIX-A7 (#4): g_winEventHook / WinEventProc removed. The hook could never fire
 // and the worker poll loop already drives every geometry refresh; see the note
-// in Wh_ModInit.
+// in WhTool_ModInit.
 
 // ============================================================
 //  DEBUG LOGGING
@@ -1010,7 +1000,7 @@ static void     RenameWorkspaceByIndex(int idx);
 static void     ApplyDockRegion(HWND hwnd);
 static bool     IsCursorOverTaskbar(POINT pt);
 static HWND     GetRealWindowFromPoint(POINT pt);
-static LONG     GetStartButtonLeftEdge(HWND taskbar, const RECT& tbRect);
+static bool     GetStartButtonLeftEdge(HWND taskbar, const RECT& tbRect, LONG* outLeft);
 
 LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK InputOwnerProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -1026,40 +1016,13 @@ static bool     CaptureWorkspaceSnapshot(WorkspaceSnapshot& snapshot, HWND owner
 static bool     SaveWorkspaceSnapshot(const WorkspaceSnapshot& snapshot);
 
 // ============================================================
-//  SINGLE-INSTANCE GATE
+//  SINGLE-INSTANCE
 // ============================================================
-// The mod declares `// @include explorer.exe`, so Wh_ModInit runs in EVERY
-// explorer.exe process. Windows routinely runs more than one: a File Explorer
-// window opened by RestoreExplorerWindowGroup ("explorer.exe /n,...") or by the
-// "open folder windows in a separate process" shell option spawns a second
-// explorer.exe, which also injected this mod and drew a SECOND dock -- two
-// overlays with different geometry plus two competing drag resolvers, so every
-// drag after opening a pinned Explorer window was rejected.
-//
-// Only the ONE process that owns the real taskbar (Shell_TrayWnd) may create
-// the dock. Every other explorer.exe inits as a no-op.
-//
-// ProcessOwnsTaskbar and ProcessShouldOwnDock were removed: superseded by
-// ProbeStartupOwnership (tri-state, line ~1116) which is called from Wh_ModInit
-// and WorkerThread. The plain bool they returned could not distinguish "taskbar
-// not up yet" (DEFER) from "another owner" (DISOWN), causing a cold-boot race
-// that silently disabled the dock in the one true shell process.
-// ProbeStartupOwnership inlines the same ownership check directly.
-
-// FIX (Issue 1): tri-state startup ownership. Unlike ProcessOwnsTaskbar (a plain
-// bool), this distinguishes "taskbar not up yet" (owner pid 0 -> STARTUP_DEFER,
-// keep polling during boot) from "another explorer.exe owns it" (STARTUP_DISOWN,
-// stay idle). Wh_ModInit uses this so a cold-boot race no longer hard-fails the
-// one true shell process; the worker re-probes until it resolves OWN or DISOWN.
-// Pure decision mirrored in tests/startup_ownership.h as DecideStartupOwnership.
-enum QpStartupOwnership { QP_STARTUP_DEFER = 0, QP_STARTUP_OWN, QP_STARTUP_DISOWN };
-static QpStartupOwnership ProbeStartupOwnership() {
-    HWND tb = FindWindowW(L"Shell_TrayWnd", NULL);
-    DWORD ownerPid = 0;
-    if (tb) GetWindowThreadProcessId(tb, &ownerPid);
-    if (ownerPid == 0) return QP_STARTUP_DEFER;
-    return (ownerPid == GetCurrentProcessId()) ? QP_STARTUP_OWN : QP_STARTUP_DISOWN;
-}
+// As a TOOL MOD this runs in a dedicated windhawk.exe launched with -tool-mod
+// taskbar-quick-pin. The official tool launcher guarantees a single instance
+// via its own mutex (windhawk-tool-mod_<id>), so the old Explorer ownership
+// machinery (which explorer.exe owns Shell_TrayWnd) is gone. Dock visibility
+// is gated purely on valid geometry (see RepositionOverlay).
 
 // ============================================================
 //  DPI SCALING
@@ -1115,25 +1078,36 @@ static BOOL CALLBACK FindStartCallback(HWND hwnd, LPARAM lParam) {
     return TRUE;
 }
 
-static LONG GetStartButtonLeftEdge(HWND taskbar, const RECT& tbRect) {
+static bool GetStartButtonLeftEdge(HWND taskbar, const RECT& tbRect, LONG* outLeft) {
     // Fast path: direct child lookup
     HWND startDirect = FindWindowExW(taskbar, NULL, L"Start", NULL);
     if (startDirect) {
         RECT sr = {};
         GetWindowRect(startDirect, &sr);
-        if (sr.left > tbRect.left && sr.left < tbRect.right)
-            return sr.left;
+        if (sr.left > tbRect.left && sr.left < tbRect.right) {
+            if (outLeft) *outLeft = sr.left;
+            return true;
+        }
     }
 
     // Enumerate all taskbar children to find Start
     StartFindCtx ctx = {};
     ctx.taskbar      = taskbar;
     ctx.taskbarRect  = tbRect;
-    ctx.bestLeft     = tbRect.left + (tbRect.right - tbRect.left) / 5;  // Sensible fallback
+    ctx.bestLeft     = 0;
     ctx.found        = false;
     EnumChildWindows(taskbar, FindStartCallback, (LPARAM)&ctx);
 
-    return ctx.found ? ctx.bestLeft : (tbRect.left + (tbRect.right - tbRect.left) / 5);
+    // FIX (Issue 1B): report Start explicitly as not-found instead of
+    // substituting a fabricated tbRect.left + width/5 estimate. Callers treat a
+    // false result as QP_LAYOUT_PENDING (keep booting) rather than committing to
+    // a layout for a Start position that was never actually resolved.
+    // (Layout decision mirrored + unit-tested in tests/start_edge_probe.h.)
+    if (ctx.found) {
+        if (outLeft) *outLeft = ctx.bestLeft;
+        return true;
+    }
+    return false;
 }
 
 // ============================================================
@@ -1141,7 +1115,13 @@ static LONG GetStartButtonLeftEdge(HWND taskbar, const RECT& tbRect) {
 // ============================================================
 static bool HasTaskbarGeometryChanged() {
     HWND tb = FindWindowW(L"Shell_TrayWnd", NULL);
-    if (!tb) return false;
+    // TOOL-MODE lifecycle (spec 2): the tool process outlives Explorer. A gone
+    // taskbar is a change while a stale dock still exists, so RefreshTaskbarCache
+    // can tear it down; and a brand-new Shell_TrayWnd handle is a change even if
+    // its rectangle matches the old one.
+    // (Mirrors DecideTaskbarChanged in tests/taskbar_lifecycle.h.)
+    if (!tb) return (g_cachedTaskbar != NULL) || (g_dockLocalW > 0);
+    if (tb != g_cachedTaskbar) return true;
 
     RECT tbr = {};
     GetWindowRect(tb, &tbr);
@@ -1149,8 +1129,9 @@ static bool HasTaskbarGeometryChanged() {
         tbr.right  != g_lastTBRect.right  || tbr.bottom != g_lastTBRect.bottom)
         return true;
 
-    LONG startLeft = GetStartButtonLeftEdge(tb, tbr);
-    if (startLeft != g_lastStartLeft) return true;
+    LONG startLeft = 0;
+    if (GetStartButtonLeftEdge(tb, tbr, &startLeft) && startLeft != g_lastStartLeft)
+        return true;
 
     LONG sw = GetSystemMetrics(SM_CXSCREEN);
     LONG sh = GetSystemMetrics(SM_CYSCREEN);
@@ -1208,7 +1189,27 @@ static inline QpLayoutDecision QpDecideTaskbarLayout(long tbrLeft, long tbrRight
 
 static void RefreshTaskbarCache() {
     HWND tb = FindWindowW(L"Shell_TrayWnd", NULL);
-    if (!tb) return;
+    // TOOL-MODE lifecycle (spec 2): Explorer can restart while this dedicated
+    // tool process stays alive. When the taskbar is gone, hide the dock, drop the
+    // cached taskbar + live geometry and reset to STATE_BOOT so a returning
+    // Shell_TrayWnd is re-resolved from scratch (fresh Start detection -> centered
+    // layout -> dock reappears). Without this the tool keeps stale dock geometry.
+    if (!tb) {
+        if (g_overlayWnd && IsWindow(g_overlayWnd)) ShowWindow(g_overlayWnd, SW_HIDE);
+        if (g_inputWnd   && IsWindow(g_inputWnd))   ShowWindow(g_inputWnd,   SW_HIDE);
+        g_cachedTaskbar       = NULL;
+        g_dockLocalW          = 0;
+        g_dockLocalH          = 0;
+        g_dockWidthLocked     = false;
+        g_positionInitialized = false;
+        g_dockPositionLocked  = false;
+        g_stableGeometryCount = 0;
+        g_lastStableWidth     = 0;
+        g_fixedDockWidth      = 0;
+        g_layoutUnsupported   = false;
+        g_systemState         = STATE_BOOT;
+        return;
+    }
 
     RECT tbr = {};
     GetWindowRect(tb, &tbr);
@@ -1216,7 +1217,12 @@ static void RefreshTaskbarCache() {
     g_cachedTBRect  = tbr;
     g_lastTBRect    = tbr;
 
-    LONG startLeft  = GetStartButtonLeftEdge(tb, tbr);
+    LONG startLeft = 0;
+    if (!GetStartButtonLeftEdge(tb, tbr, &startLeft)) {
+        // FIX (Issue 1B): Start not resolved yet -> QP_LAYOUT_PENDING. Keep
+        // STATE_BOOT and retry next poll instead of a fabricated edge.
+        return;
+    }
     g_lastStartLeft = startLeft;
     g_lastScreenW   = GetSystemMetrics(SM_CXSCREEN);
     g_lastScreenH   = GetSystemMetrics(SM_CYSCREEN);
@@ -1656,20 +1662,6 @@ static int HitTestIcon(POINT screenPt) {
 // ============================================================
 void RepositionOverlay() {
     if (!g_overlayWnd || !IsWindow(g_overlayWnd)) return;
-
-    // FIX (Issue 3 -- "show first, decide later"): visibility is owned solely
-    // by the worker once it has (a) resolved that THIS process owns the taskbar
-    // (g_dockOwnershipDecided -- set only on QP_STARTUP_OWN; a DISOWN parks the
-    // worker forever and never sets it) and (b) produced a real QP_LAYOUT_OK
-    // geometry. Until both hold, keep BOTH windows hidden so the 1/255-alpha
-    // HTCLIENT input window can never sit in the top-left corner swallowing
-    // clicks, and no mini-dock flashes there on a cold start. This also covers
-    // the DISOWN case (a non-owner explorer.exe must never show the dock).
-    if (!g_dockOwnershipDecided) {
-        if (g_inputWnd && IsWindow(g_inputWnd)) ShowWindow(g_inputWnd, SW_HIDE);
-        ShowWindow(g_overlayWnd, SW_HIDE);
-        return;
-    }
 
     // FIX (Issue 2): on an unsupported (left-aligned) layout the dock is hidden
     // and has no valid geometry. Keep both windows hidden and return so the
@@ -3571,9 +3563,9 @@ static void LaunchWorkspaceAsync(const std::wstring& workspaceId) {
 
     // Review #4 (Bug A): never drop a still-running launch thread. Track every
     // outstanding handle in g_launchWorkspaceThreads and only reap the ones that
-    // have already finished; Wh_ModUninit joins whatever is left. Also refuse to
+    // have already finished; WhTool_ModUninit joins whatever is left. Also refuse to
     // start a new launch once teardown has begun, so we can't spawn a thread that
-    // outlives Wh_ModUninit's join (which is reachable from the UI thread's
+    // outlives WhTool_ModUninit's join (which is reachable from the UI thread's
     // "Restore Workspace" menu path).
     if (g_launchWorkspaceStop.load()) return;
     if (!g_launchCsInit) { LaunchWorkspace(workspaceId); return; }
@@ -3589,7 +3581,7 @@ static void LaunchWorkspaceAsync(const std::wstring& workspaceId) {
             CloseHandle(t);
             g_launchWorkspaceThreads.erase(g_launchWorkspaceThreads.begin() + i);
         } else {
-            ++i;   // still running -- KEEP it so Wh_ModUninit can join it
+            ++i;   // still running -- KEEP it so WhTool_ModUninit can join it
         }
     }
     h = CreateThread(NULL, 0, LaunchWorkspaceThread, ownedId, 0, NULL);
@@ -3721,7 +3713,7 @@ static IWebBrowserApp* WaitForNewExplorerAppForFolder(
     while (GetTickCount() - start < timeoutMs) {
         // Review #4 (Bug B): bail the instant the mod is being torn down instead
         // of Sleep(80)-polling for the full timeout. Otherwise disabling the mod
-        // mid-restore made Wh_ModUninit's INFINITE join block for up to ~15 s
+        // mid-restore made WhTool_ModUninit's INFINITE join block for up to ~15 s
         // (4500 + 2500 ms per tab). Checked at the top of every iteration.
         if (g_launchWorkspaceStop.load()) return NULL;
         std::vector<ExplorerTab> tabs = EnumerateExplorerTabs();
@@ -4212,9 +4204,9 @@ static bool PromptWorkspaceName(HWND owner, const std::wstring& currentName, std
     // FIX (Issue 6): this nested modal loop MUST cope with WM_QUIT. GetMessageW
     // returns 0 (not >0) when it dequeues WM_QUIT and, crucially, CONSUMES it.
     // The old `while (GetMessageW(...) > 0)` therefore swallowed the WM_QUIT that
-    // Wh_ModUninit posts to tear the UI thread down: the loop just exited, the
+    // WhTool_ModUninit posts to tear the UI thread down: the loop just exited, the
     // outer UiThreadProc pump never saw WM_QUIT, so its GetMessageW blocked
-    // forever and Wh_ModUninit's INFINITE thread-join hung -- disabling/reloading
+    // forever and WhTool_ModUninit's INFINITE thread-join hung -- disabling/reloading
     // the mod while the rename dialog was open froze. Now: on WM_QUIT we close
     // the dialog, RE-POST WM_QUIT so the outer loop receives it, and return.
     MSG msg;
@@ -5205,7 +5197,7 @@ static void TriggerLockGlow() {
 //  because the dock overlay is region-clipped to the dock and physically
 //  cannot paint in the empty space outside the dock where the thread
 //  lives. The window is created lazily on first drag and torn down in
-//  Wh_ModUninit alongside the ghost.
+//  WhTool_ModUninit alongside the ghost.
 // ============================================================
 static HWND    g_tetherWnd  = NULL;
 static HBITMAP g_tetherDIB  = NULL;
@@ -6896,7 +6888,7 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         // ---- Running-state indicator dots ----
         // A small dot is drawn below each icon of a currently running app.
         // Style mirrors Windows 11: centred below icon, white-blue tint, ~3px diameter.
-        // g_runDotBrush is cached after first paint; freed in Wh_ModUninit.
+        // g_runDotBrush is cached after first paint; freed in WhTool_ModUninit.
         if (!g_runDotBrush) g_runDotBrush = CreateSolidBrush(RGB(200, 210, 235));
         if (g_runDotBrush) {
             HGDIOBJ oldBr  = SelectObject(hdc, g_runDotBrush);
@@ -7613,7 +7605,7 @@ static void UnpinForegroundApp() {
 
 DWORD WINAPI WorkerThread(LPVOID) {
     // FIX-A8 (#11): the optional startup delay now runs HERE, on the worker
-    // thread, instead of blocking Wh_ModInit (which runs on the process main
+    // thread, instead of blocking WhTool_ModInit (which runs on the process main
     // thread at load, or the Windhawk Engine thread on a live reload -- either
     // way a Sleep there stalls Explorer startup / the Windhawk UI). Wait on
     // g_exitEvent so a disable/reload during the delay tears down instantly
@@ -7634,40 +7626,9 @@ DWORD WINAPI WorkerThread(LPVOID) {
         GetCursorPos(&cursor);
         DWORD now = GetTickCount();
 
-        // FIX (Issue 1): if Wh_ModInit deferred the ownership decision (the
-        // taskbar wasn't up yet at load), keep re-probing here during boot.
-        //   DEFER  -> taskbar still not up: stay idle this cycle, poll again.
-        //   OWN    -> this is the shell process: activate the dock from now on.
-        //   DISOWN -> another explorer.exe owns the taskbar: stay idle forever
-        //             (never build a duplicate dock) -- park on g_exitEvent.
-        if (!g_dockOwnershipDecided) {
-            QpStartupOwnership own = ProbeStartupOwnership();
-            if (own == QP_STARTUP_OWN) {
-                g_dockOwnershipDecided = true;
-                Wh_Log(L"OWNERSHIP: taskbar resolved to this process -- dock activated");
-            } else if (own == QP_STARTUP_DISOWN) {
-                Wh_Log(L"OWNERSHIP: another explorer.exe owns the taskbar -- dock stays idle");
-                // FIX (Issue 3 -- DISOWN leaves live window + hotkey): a
-                // non-owner explorer.exe must not keep the two windows parked at
-                // (0,0) NOR keep the global Ctrl+Alt+P hotkey registered -- a
-                // WM_HOTKEY there would run PinApp -> SavePinnedApps and clobber
-                // the REAL dock's stored list. Post WM_QUIT to the UI thread so
-                // it destroys its windows and unregisters the hotkey/classes on
-                // the creating thread (the same teardown Wh_ModUninit uses),
-                // then park until teardown.
-                if (g_uiThreadId) PostThreadMessageW(g_uiThreadId, WM_QUIT, 0, 0);
-                WaitForSingleObject(g_exitEvent, INFINITE);
-                return 0;
-            } else {
-                // STARTUP_DEFER: taskbar not up yet. Idle one poll cycle.
-                WaitForSingleObject(g_exitEvent, 100);
-                continue;
-            }
-        }
-
         // Safety geometry poll + running-state + auto-hide check.
         // Poll every 100 ms while still in boot/stabilizing so the dock becomes
-        // visible within one poll cycle after Wh_ModInit.  Once geometry is locked
+        // visible within one poll cycle after WhTool_ModInit.  Once geometry is locked
         // (STATE_STABLE), drop to a relaxed 500 ms cadence to save CPU.
         DWORD pollIntervalMs = (g_systemState != STATE_STABLE) ? 100u : (DWORD)RUNNING_STATE_CHECK_MS;
         if (now - lastGeometryCheck > pollIntervalMs || g_dockWidthDirty) {
@@ -8684,7 +8645,7 @@ DWORD WINAPI WorkerThread(LPVOID) {
         //  50 ms  --  fully idle (saves CPU)
         // ================================================================
         // NOTE: sleep on g_exitEvent instead of Sleep() so teardown is instant.
-        // A plain Sleep(50) here delayed Wh_ModUninit's worker-join by up to a
+        // A plain Sleep(50) here delayed WhTool_ModUninit's worker-join by up to a
         // full frame (plus any in-flight scan), which blocked Windhawk during a
         // recompile/reload and made the first "Compile" click(s) appear to do
         // nothing. WaitForSingleObject returns immediately once g_exitEvent is
@@ -8955,10 +8916,10 @@ static void CommitReorder() {
 // ============================================================
 //  MODULE ENTRY POINTS
 // ============================================================
-// Forward declaration  --  Wh_ModInit calls this on any failure path to ensure
+// Forward declaration  --  WhTool_ModInit calls this on any failure path to ensure
 // every partially-initialised resource (HWND, HICON, HANDLE, CS) is released
-// even if Windhawk does not guarantee calling Wh_ModUninit after a FALSE return.
-void Wh_ModUninit();
+// even if Windhawk does not guarantee calling WhTool_ModUninit after a FALSE return.
+void WhTool_ModUninit();
 
 // FIX-C1 (#1/#2/#8): the dedicated UI thread. It creates every top-level window
 // (input owner, overlay, ghost, the pre-warmed tether/vanish layers),
@@ -8967,10 +8928,10 @@ void Wh_ModUninit();
 // WM_MOUSEWHEEL / WM_HOTKEY are actually dispatched.
 // On WM_QUIT it destroys those windows and unregisters the classes -- on the SAME
 // thread that created them, which is what DestroyWindow / UnregisterHotKey /
-// UnregisterClassW require. Wh_ModInit waits on g_uiReadyEvent so the worker only
+// UnregisterClassW require. WhTool_ModInit waits on g_uiReadyEvent so the worker only
 // starts once the windows exist.
 static DWORD WINAPI UiThreadProc(LPVOID) {
-    // Force a message queue to exist before Wh_ModUninit can PostThreadMessage() us.
+    // Force a message queue to exist before WhTool_ModUninit can PostThreadMessage() us.
     MSG probe;
     PeekMessageW(&probe, NULL, WM_USER, WM_USER, PM_NOREMOVE);
     g_uiThreadId = GetCurrentThreadId();
@@ -8992,25 +8953,24 @@ static DWORD WINAPI UiThreadProc(LPVOID) {
             g_positionInitialized = true;
         }
 
-        // FIX (Issue 3 -- "show first, decide later"): do NOT show either
-        // window from the UI thread. Previously this force-showed both windows
-        // at (0,0) 200x48 unconditionally, before ownership was resolved and
-        // before a valid dock geometry existed. On Windows 10 / left-aligned
-        // Windows 11 the UNSUPPORTED branch of RefreshTaskbarCache had already
-        // run in Wh_ModInit (its SW_HIDE calls were no-ops -- no window existed
-        // yet), and RepositionOverlay bails on g_layoutUnsupported without
-        // moving/hiding, so the 1/255-alpha HTCLIENT input window stayed parked
-        // in the top-left corner permanently, swallowing clicks and popping the
-        // context menu on right-click. On a cold start it flashed a mini dock
-        // in the top-left until Shell_TrayWnd appeared, and after a DISOWN it
-        // left a live window + registered hotkey in a non-owner process.
+        // FIX (Issue 3 -- do-not-show-first): do NOT show either window from
+        // the UI thread. Previously this force-showed both windows at (0,0)
+        // 200x48 unconditionally, before a valid dock geometry existed. On
+        // Windows 10 / left-aligned Windows 11 the UNSUPPORTED branch of
+        // RefreshTaskbarCache had already run (its SW_HIDE calls were no-ops --
+        // no window existed yet), and RepositionOverlay bails on
+        // g_layoutUnsupported without moving/hiding, so the 1/255-alpha HTCLIENT
+        // input window stayed parked in the top-left corner permanently,
+        // swallowing clicks and popping the context menu on right-click. On a
+        // cold start it flashed a mini dock in the top-left until Shell_TrayWnd
+        // appeared.
         //
-        // Ownership of visibility now belongs SOLELY to the worker: once it
-        // resolves QP_STARTUP_OWN and RefreshTaskbarCache has produced a valid
-        // QP_LAYOUT_OK geometry (g_dockLocalW > 0), its RepositionOverlay call
-        // shows the windows in the correct place. Until then they stay hidden.
-        // We still let RepositionOverlay run here to seat the *position* state,
-        // but it will not show anything (guarded on ownership/geometry below).
+        // Visibility now belongs SOLELY to the worker: once RefreshTaskbarCache
+        // has produced a valid centered-taskbar geometry (g_dockLocalW > 0), its
+        // RepositionOverlay call shows the windows in the correct place. Until
+        // then they stay hidden. We still let RepositionOverlay run here to seat
+        // the position state, but it will not show anything (guarded on geometry
+        // below).
         RepositionOverlay();
     }
 
@@ -9028,9 +8988,9 @@ static DWORD WINAPI UiThreadProc(LPVOID) {
 
     // Teardown on the creating thread (FIX #2/#3). Runs on the normal WM_QUIT exit
     // AND on the early-failure path. Only the thread-affine window/class/hotkey work
-    // happens here; the plain GDI/DIB/CS/icon frees stay in Wh_ModUninit (which runs
+    // happens here; the plain GDI/DIB/CS/icon frees stay in WhTool_ModUninit (which runs
     // this teardown's globals as harmless no-ops after it joins this thread). DIBs
-    // are intentionally NOT deleted here to avoid a double-free with Wh_ModUninit.
+    // are intentionally NOT deleted here to avoid a double-free with WhTool_ModUninit.
     if (g_overlayWnd && IsWindow(g_overlayWnd) && g_hotkeyKey != 0 && g_hotkeyMods != 0)
         UnregisterHotKey(g_overlayWnd, HOTKEY_PIN_ID);
     if (g_tetherWnd) { DestroyWindow(g_tetherWnd); g_tetherWnd = NULL; }
@@ -9051,7 +9011,7 @@ static DWORD WINAPI UiThreadProc(LPVOID) {
 }
 
 // FIX (D2 polish): the setting read+clamp block was duplicated verbatim in both
-// Wh_ModInit and Wh_ModSettingsChanged (~40 lines), which is exactly how the two
+// WhTool_ModInit and WhTool_ModSettingsChanged (~40 lines), which is exactly how the two
 // drift apart (e.g. one reads a setting the other forgets). Factored into a single
 // LoadSettings() helper that both call, so there is now one source of truth.
 static void LoadSettings() {
@@ -9115,43 +9075,24 @@ static bool QpIsWindows11OrGreater() {
            (vi.dwMajorVersion == 10 && vi.dwBuildNumber >= 22000);
 }
 
-BOOL Wh_ModInit() {
-    // Read and clamp all user settings (shared with Wh_ModSettingsChanged).
+BOOL WhTool_ModInit() {
+    // Read and clamp all user settings (shared with WhTool_ModSettingsChanged).
     LoadSettings();
 
     // FIX (Issue 3): Windows 11 only. On older builds the mod can never produce
     // a supported layout, so return FALSE immediately -- creating NO resources
-    // (Wh_ModUninit has nothing to tear down) rather than idling two threads and
+    // (WhTool_ModUninit has nothing to tear down) rather than idling two threads and
     // two hidden windows on a platform we can't serve.
     if (!QpIsWindows11OrGreater()) {
         Wh_Log(L"INIT: unsupported OS (Windows 11 / build >= 22000 required) -- dock disabled");
         return FALSE;
     }
 
-    // SINGLE-INSTANCE GATE: this mod is injected into EVERY explorer.exe. Only
-    // the process that owns the real taskbar (Shell_TrayWnd) may build the dock;
-    // any other explorer.exe (e.g. a File Explorer window spawned by workspace
-    // restore, or by "open folder windows in a separate process") must init as a
-    // no-op -- otherwise it draws a duplicate dock and runs a second, conflicting
-    // drag resolver. Returning FALSE here creates NO resources, so Wh_ModUninit
-    // has nothing to tear down.
-    // FIX (Issue 1): ownership is NOT a hard init failure any more. Only a
-    // process that POSITIVELY resolves a DIFFERENT taskbar owner is a no-op
-    // (STARTUP_DISOWN) -- that still blocks a second explorer.exe from drawing a
-    // duplicate dock. When the taskbar isn't up yet (STARTUP_DEFER, owner pid 0
-    // on a cold start / sign-in) we init normally and let WorkerThread re-probe
-    // ownership during STATE_BOOT, so the one true shell process is never left
-    // permanently without a dock.
-    QpStartupOwnership startupOwn = ProbeStartupOwnership();
-    if (startupOwn == QP_STARTUP_DISOWN) {
-        Wh_Log(L"INIT: another explorer.exe owns the taskbar (pid=%u) -- dock disabled in this process",
-               (unsigned)GetCurrentProcessId());
-        return FALSE;
-    }
-    // OWN: activate immediately. DEFER: leave inactive; the worker decides.
-    g_dockOwnershipDecided = (startupOwn == QP_STARTUP_OWN);
+    // SINGLE-INSTANCE: guaranteed by the tool launcher's mutex
+    // (windhawk-tool-mod_<id>); no in-mod ownership probe is needed. The dock
+    // stays hidden until the worker resolves valid geometry (see RepositionOverlay).
 
-    // FIX-A8 (#11): the optional startup delay was moved OUT of Wh_ModInit and
+    // FIX-A8 (#11): the optional startup delay was moved OUT of WhTool_ModInit and
     // into the worker thread (see WorkerThread) so init returns promptly and
     // never blocks Explorer startup / the Windhawk Engine thread for up to 3 s.
 
@@ -9164,7 +9105,7 @@ BOOL Wh_ModInit() {
     g_launchWorkspaceStop.store(false);   // reset in case of a reload
 
     g_exitEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
-    if (!g_exitEvent) { Wh_ModUninit(); return FALSE; }
+    if (!g_exitEvent) { WhTool_ModUninit(); return FALSE; }
 
     QueryPerformanceFrequency(&g_perfFreq);  // enable sub-ms animation timing
     g_bootStartTime = GetTickCount();
@@ -9190,14 +9131,14 @@ BOOL Wh_ModInit() {
     // (The former SetWinEventHook was already removed in FIX-A7 -- the worker poll
     // drives every geometry update, now actually dispatched by this thread's pump.)
     g_uiReadyEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
-    if (!g_uiReadyEvent) { Wh_ModUninit(); return FALSE; }
+    if (!g_uiReadyEvent) { WhTool_ModUninit(); return FALSE; }
     g_uiThread = CreateThread(NULL, 0, UiThreadProc, NULL, 0, NULL);
-    if (!g_uiThread) { Wh_ModUninit(); return FALSE; }
+    if (!g_uiThread) { WhTool_ModUninit(); return FALSE; }
     WaitForSingleObject(g_uiReadyEvent, INFINITE);
-    if (!g_uiInitOk) { Wh_ModUninit(); return FALSE; }
+    if (!g_uiInitOk) { WhTool_ModUninit(); return FALSE; }
 
     g_workerThread = CreateThread(NULL, 0, WorkerThread, NULL, 0, NULL);
-    if (!g_workerThread) { Wh_ModUninit(); return FALSE; }
+    if (!g_workerThread) { WhTool_ModUninit(); return FALSE; }
 
     if (ENABLE_AUTOHIDE_SYNC) UpdateAutoHideState();  // only when user enables sync
 
@@ -9210,7 +9151,7 @@ BOOL Wh_ModInit() {
     return TRUE;
 }
 
-void Wh_ModUninit() {
+void WhTool_ModUninit() {
     // FIX-A7 (#4): WinEvent hook removed -- nothing to unhook.
     // FIX-C1 (#2): the pin hotkey and every window are unregistered/destroyed by
     // the UI thread itself (UiThreadProc), on the thread that created them -- see
@@ -9386,8 +9327,8 @@ void Wh_ModUninit() {
 // discovery rather than calling RefreshTaskbarCache/RepositionOverlay directly
 // from this arbitrary thread -- those functions touch g_fixedDockWidth,
 // g_systemState, g_dockCurrentX/Y, and g_cachedDockRect which the worker owns.
-void Wh_ModSettingsChanged() {
-    // Read and clamp all user settings (shared with Wh_ModInit via LoadSettings).
+void WhTool_ModSettingsChanged() {
+    // Read and clamp all user settings (shared with WhTool_ModInit via LoadSettings).
     LoadSettings();
 
     // LIVE DOCK-GAP FIX: the dock's X is protected by a jitter lock
@@ -9423,4 +9364,183 @@ void Wh_ModSettingsChanged() {
               MAX_PINNED_APPS, BASE_ICON_SIZE, BASE_ICON_SPACING,
               (int)ENABLE_REORDER,
               (int)ENABLE_EXPLORER_WORKSPACE_PINS);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Windhawk tool mod implementation for mods which don't need to inject to other
+// processes or hook other functions. Context:
+// https://github.com/ramensoftware/windhawk/wiki/Mods-as-tools:-Running-mods-in-a-dedicated-process
+//
+// The mod will load and run in a dedicated windhawk.exe process.
+//
+// Paste the code below as part of the mod code, and use these callbacks:
+// * WhTool_ModInit
+// * WhTool_ModSettingsChanged
+// * WhTool_ModUninit
+//
+// Currently, other callbacks are not supported.
+
+bool g_isToolModProcessLauncher;
+HANDLE g_toolModProcessMutex;
+
+void WINAPI EntryPoint_Hook() {
+    Wh_Log(L">");
+    ExitThread(0);
+}
+
+BOOL Wh_ModInit() {
+    DWORD sessionId;
+    if (ProcessIdToSessionId(GetCurrentProcessId(), &sessionId) &&
+        sessionId == 0) {
+        return FALSE;
+    }
+
+    bool isExcluded = false;
+    bool isToolModProcess = false;
+    bool isCurrentToolModProcess = false;
+    int argc;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLine(), &argc);
+    if (!argv) {
+        Wh_Log(L"CommandLineToArgvW failed");
+        return FALSE;
+    }
+
+    for (int i = 1; i < argc; i++) {
+        if (wcscmp(argv[i], L"-service") == 0 ||
+            wcscmp(argv[i], L"-service-start") == 0 ||
+            wcscmp(argv[i], L"-service-stop") == 0) {
+            isExcluded = true;
+            break;
+        }
+    }
+
+    for (int i = 1; i < argc - 1; i++) {
+        if (wcscmp(argv[i], L"-tool-mod") == 0) {
+            isToolModProcess = true;
+            if (wcscmp(argv[i + 1], WH_MOD_ID) == 0) {
+                isCurrentToolModProcess = true;
+            }
+            break;
+        }
+    }
+
+    LocalFree(argv);
+
+    if (isExcluded) {
+        return FALSE;
+    }
+
+    if (isCurrentToolModProcess) {
+        g_toolModProcessMutex =
+            CreateMutex(nullptr, TRUE, L"windhawk-tool-mod_" WH_MOD_ID);
+        if (!g_toolModProcessMutex) {
+            Wh_Log(L"CreateMutex failed");
+            ExitProcess(1);
+        }
+
+        if (GetLastError() == ERROR_ALREADY_EXISTS) {
+            Wh_Log(L"Tool mod already running (%s)", WH_MOD_ID);
+            ExitProcess(1);
+        }
+
+        if (!WhTool_ModInit()) {
+            ExitProcess(1);
+        }
+
+        IMAGE_DOS_HEADER* dosHeader =
+            (IMAGE_DOS_HEADER*)GetModuleHandle(nullptr);
+        IMAGE_NT_HEADERS* ntHeaders =
+            (IMAGE_NT_HEADERS*)((BYTE*)dosHeader + dosHeader->e_lfanew);
+
+        DWORD entryPointRVA = ntHeaders->OptionalHeader.AddressOfEntryPoint;
+        void* entryPoint = (BYTE*)dosHeader + entryPointRVA;
+
+        Wh_SetFunctionHook(entryPoint, (void*)EntryPoint_Hook, nullptr);
+        return TRUE;
+    }
+
+    if (isToolModProcess) {
+        return FALSE;
+    }
+
+    g_isToolModProcessLauncher = true;
+    return TRUE;
+}
+
+void Wh_ModAfterInit() {
+    if (!g_isToolModProcessLauncher) {
+        return;
+    }
+
+    WCHAR currentProcessPath[MAX_PATH];
+    switch (GetModuleFileName(nullptr, currentProcessPath,
+                              ARRAYSIZE(currentProcessPath))) {
+        case 0:
+        case ARRAYSIZE(currentProcessPath):
+            Wh_Log(L"GetModuleFileName failed");
+            return;
+    }
+
+    WCHAR
+    commandLine[MAX_PATH + 2 +
+                (sizeof(L" -tool-mod \"" WH_MOD_ID "\"") / sizeof(WCHAR)) - 1];
+    swprintf_s(commandLine, L"\"%s\" -tool-mod \"%s\"", currentProcessPath,
+               WH_MOD_ID);
+
+    HMODULE kernelModule = GetModuleHandle(L"kernelbase.dll");
+    if (!kernelModule) {
+        kernelModule = GetModuleHandle(L"kernel32.dll");
+        if (!kernelModule) {
+            Wh_Log(L"No kernelbase.dll/kernel32.dll");
+            return;
+        }
+    }
+
+    using CreateProcessInternalW_t = BOOL(WINAPI*)(
+        HANDLE hUserToken, LPCWSTR lpApplicationName, LPWSTR lpCommandLine,
+        LPSECURITY_ATTRIBUTES lpProcessAttributes,
+        LPSECURITY_ATTRIBUTES lpThreadAttributes, WINBOOL bInheritHandles,
+        DWORD dwCreationFlags, LPVOID lpEnvironment, LPCWSTR lpCurrentDirectory,
+        LPSTARTUPINFOW lpStartupInfo,
+        LPPROCESS_INFORMATION lpProcessInformation,
+        PHANDLE hRestrictedUserToken);
+    CreateProcessInternalW_t pCreateProcessInternalW =
+        (CreateProcessInternalW_t)GetProcAddress(kernelModule,
+                                                 "CreateProcessInternalW");
+    if (!pCreateProcessInternalW) {
+        Wh_Log(L"No CreateProcessInternalW");
+        return;
+    }
+
+    STARTUPINFO si{
+        .cb = sizeof(STARTUPINFO),
+        .dwFlags = STARTF_FORCEOFFFEEDBACK,
+    };
+    PROCESS_INFORMATION pi;
+    if (!pCreateProcessInternalW(nullptr, currentProcessPath, commandLine,
+                                 nullptr, nullptr, FALSE, NORMAL_PRIORITY_CLASS,
+                                 nullptr, nullptr, &si, &pi, nullptr)) {
+        Wh_Log(L"CreateProcess failed");
+        return;
+    }
+
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+}
+
+void Wh_ModSettingsChanged() {
+    if (g_isToolModProcessLauncher) {
+        return;
+    }
+
+    WhTool_ModSettingsChanged();
+}
+
+void Wh_ModUninit() {
+    if (g_isToolModProcessLauncher) {
+        return;
+    }
+
+    WhTool_ModUninit();
+    ExitProcess(0);
 }
