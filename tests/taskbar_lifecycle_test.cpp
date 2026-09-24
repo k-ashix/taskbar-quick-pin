@@ -66,6 +66,29 @@ static void test_same_taskbar_no_tracked_change_is_no_change() {
                                /*tracked*/false) == false);
 }
 
+// ---- Start-button loss during a taskbar rebuild (v2.5.3) --------------------
+// Same Shell_TrayWnd, same rect, but the Start-button probe FAILED this poll
+// (Start temporarily gone while the taskbar rebuilds). The dock anchors to the
+// LEFT of Start, so an unresolved Start means the currently shown geometry is
+// stale and must be torn down -- but only when a dock is actually showing.
+
+static void test_start_lost_with_live_dock_is_change() {
+    // Dock showing + Start gone -> stale geometry -> must refresh/tear down.
+    CHECK(StartLossIsChange(/*startResolved=*/false, /*haveLiveDockGeometry=*/true) == true);
+}
+
+static void test_start_lost_without_live_dock_is_not_change() {
+    // Cold boot / still pending: no dock geometry to invalidate yet.
+    CHECK(StartLossIsChange(/*startResolved=*/false, /*haveLiveDockGeometry=*/false) == false);
+}
+
+static void test_start_resolved_is_not_a_loss_change() {
+    // Start resolved fine: the loss path never fires. A MOVED Start is handled by
+    // the normal tracked-field comparison, not by this predicate.
+    CHECK(StartLossIsChange(/*startResolved=*/true, /*haveLiveDockGeometry=*/true) == false);
+    CHECK(StartLossIsChange(/*startResolved=*/true, /*haveLiveDockGeometry=*/false) == false);
+}
+
 int main() {
     test_taskbar_lost_with_cached_taskbar_is_change();
     test_taskbar_lost_with_geometry_only_is_change();
@@ -73,6 +96,9 @@ int main() {
     test_new_shell_traywnd_handle_is_change_even_if_rect_matches();
     test_same_taskbar_tracked_change_propagates();
     test_same_taskbar_no_tracked_change_is_no_change();
+    test_start_lost_with_live_dock_is_change();
+    test_start_lost_without_live_dock_is_not_change();
+    test_start_resolved_is_not_a_loss_change();
 
     if (g_failures == 0) {
         std::printf("taskbar_lifecycle: ALL PASS\n");

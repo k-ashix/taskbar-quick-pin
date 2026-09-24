@@ -44,4 +44,24 @@ static inline bool DecideTaskbarChanged(bool taskbarFound,
     return trackedFieldsChanged;
 }
 
+// v2.5.3 -- Start-button loss during a taskbar rebuild / startup.
+//
+// HasTaskbarGeometryChanged used to treat only a MOVED Start button (a probe
+// that SUCCEEDS with a new left edge) as a change. But if Shell_TrayWnd still
+// exists while the Start button temporarily disappears (taskbar rebuild), the
+// probe FAILS, the "moved" comparison is skipped, and nothing reports a change
+// -- so RefreshTaskbarCache never runs and the previously placed dock geometry
+// (which was anchored to the LEFT of a Start button that no longer resolves)
+// survives as stale state.
+//
+// This predicate closes that gap: an unresolved Start is itself a change WHEN a
+// dock is actually showing (haveLiveDockGeometry), so the cache is invalidated
+// and the stale dock torn down. With no live dock yet (cold boot / still
+// pending) there is nothing stale to refresh, so it is NOT a change.
+//   startResolved        : GetStartButtonLeftEdge() succeeded this poll.
+//   haveLiveDockGeometry : g_dockLocalW > 0 (a dock is currently placed).
+static inline bool StartLossIsChange(bool startResolved, bool haveLiveDockGeometry) {
+    return !startResolved && haveLiveDockGeometry;
+}
+
 #endif  // TASKBAR_QUICK_PIN_TASKBAR_LIFECYCLE_H

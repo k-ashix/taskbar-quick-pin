@@ -50,8 +50,10 @@
       5. Cleans up: removes tests\build\ so no .exe artifacts remain next to
          the source. All .cpp / .h source is left untouched.
       6. error.log: written to the repo root ONLY when something fails.
-         Contains every build-fail, test-fail, and guard-fail with their full
-         output, plus a pointer to the full transcript. On a clean PASS run the
+         For build/test failures it contains the failing compiler / assert
+         output; for guard failures it contains ONLY the [FAIL] error lines and
+         any error detail -- not the guard's full pass/summary output. Plus a
+         pointer to the full transcript. On a clean PASS run the
          file is never created; if a stale one exists from a previous failure it
          is automatically deleted so its presence always means "last run failed".
 
@@ -64,8 +66,9 @@
         -SkipLogLayerCheck   skip the log-layer guard and its self-test
         -SkipEmptyBodyCheck  skip the empty-body guard and its self-test
         -SkipBalanceCheck    skip the delimiter balance check
-        -SkipRegressionCheck skip the source-invariant regression gate
-        -ShowPass            print each successful test to the terminal
+        -SkipRegressionCheck    skip the source-invariant regression gate
+        -SkipVersionInitCheck   skip the version / INIT consistency check
+        -ShowPass               print each successful test to the terminal
         -Compiler g++        choose the C++ compiler (default: g++)
         -Std c++17           choose the language standard (default: c++17)
 #>
@@ -77,6 +80,7 @@ param(
     [switch]$SkipLogLayerCheck,
     [switch]$SkipEmptyBodyCheck,
     [switch]$SkipRegressionCheck,
+    [switch]$SkipVersionInitCheck,
     [switch]$ShowPass,
     [string]$Compiler = "g++",
     [string]$Std = "c++17"
@@ -143,9 +147,21 @@ function Write-Field {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Read the canonical mod version from @version in taskbar-quick-pin.wh.cpp.
+# Used in the FINAL RESULT header and version-drift detail row.
+# ---------------------------------------------------------------------------
+$ModFile = Join-Path $RepoRoot "taskbar-quick-pin.wh.cpp"
+$script:ModVersion = "(unknown)"
+if (Test-Path $ModFile) {
+    $vMatch = [regex]::Match((Get-Content -Path $ModFile -Raw), '(?m)^//\s*@version\s+([\d]+\.[\d]+\.[\d]+)')
+    if ($vMatch.Success) { $script:ModVersion = "v" + $vMatch.Groups[1].Value }
+}
+
 # Start the log and terminal with a compact, structured run header.
 Set-Content -Path $LogFile -Value ("Test run: " + (Get-Date).ToString("yyyy-MM-dd HH:mm:ss"))
 Write-Section "TASKBAR QUICK PIN TEST RUN"
+Write-Field "Mod version" $script:ModVersion
 Write-Field "Repository" $RepoRoot
 Write-Field "Transcript" $LogFile
 
@@ -191,6 +207,7 @@ foreach ($t in $tests) {
 
     # Stable per-test progress is written to the transcript. The terminal stays
     # quiet by default; -ShowPass prints one ordinary line per successful test.
+    Write-Log ""
     Write-Log ("[{0,2}/{1}] {2}" -f $idx, $tests.Count, $name)
 
     # --- Compile (headers are found via -I tests\) ---
@@ -234,6 +251,7 @@ Write-Field "Failed" ("{0}" -f $failed) $(if ($failed -eq 0) { "Green" } else { 
 Write-Field "Total"  ("{0}" -f $tests.Count)
 
 # --- Cleanup: remove all build artifacts so no .exe lingers by the source ---
+Write-Log ""
 if (-not $KeepBinaries) {
     Remove-Item -Recurse -Force $BuildDir
     Write-Log "Cleaned build artifacts (tests\build\ removed)."
@@ -264,7 +282,8 @@ $extraFailed = 0
 $subCheckStatuses = [ordered]@{}
 
 Write-Section "AUTOMATED GUARDS"
-Write-Log "Enabled guards run quietly; their full output is stored in the transcript." -ToConsole
+Write-Log "Each guard runs in sequence. Full output is stored in the transcript." -ToConsole
+Write-Log "" -ToConsole
 
 function Invoke-SubCheck {
     # NOTE: the param is $ExtraArgs, NOT $Args. $Args is a PowerShell AUTOMATIC
@@ -276,22 +295,45 @@ function Invoke-SubCheck {
     if (-not (Test-Path $path)) {
         Write-Log ("{0} not found at {1} (skipping)." -f $ScriptName, $path) -Color Yellow -ToConsole
         $script:subCheckStatuses[$Label] = "SKIPPED (missing)"
+        Write-Host ("  [ SKIP ] {0,-36}  (script not found)" -f $Label) -ForegroundColor Yellow
         return
     }
     Write-Log ""
-    Write-Log ("[CHECK] {0} ({1})" -f $Label, $ScriptName)
+    Write-Log ("--- CHECK: {0} ---" -f $Label)
+    Write-Log ("    script : {0}" -f $ScriptName)
+    # Show the guard name on the terminal while it runs so the user can see progress.
+    Write-Host ("  [ RUN  ] {0}" -f $Label) -ForegroundColor DarkCyan
     $out = & powershell -ExecutionPolicy Bypass -File $path @ExtraArgs 2>&1
     $code = $LASTEXITCODE
     $out | ForEach-Object { Write-Log ("    $_") }
+    Write-Log ""
     if ($code -ne 0) {
+        Write-Log ("    RESULT : FAIL (exit $code)")
+        Write-Log ("-" * 60)
         Write-Log ("{0}: FAIL (exit {1}) -- see log." -f $Label, $code) -Color Red -ToConsole
+        Write-Host ("  [ FAIL ] {0,-36}  exit $code" -f $Label) -ForegroundColor Red
         $script:subCheckStatuses[$Label] = "FAIL (exit $code)"
-        # Capture for error.log
+        # Capture for error.log -- ONLY the real error lines, not the guard's
+        # full pass/summary output. Keep [FAIL] rows and any error/snippet/context
+        # detail; drop [PASS] rows, PART/=== section headers and blank noise so the
+        # file shows just what failed, not the whole run again.
         $script:ErrorLines.Add("[GUARD FAIL] $Label (exit $code)")
-        $out | ForEach-Object { $script:ErrorLines.Add("    $_") }
+        $errOnly = $out | Where-Object {
+            $ln = [string]$_
+            ($ln -notmatch '\[\s*PASS\s*\]') -and
+            ($ln -notmatch '^\s*PART\s') -and
+            ($ln -notmatch '^\s*=+\s*$') -and
+            ($ln -notmatch '^\s*===') -and
+            ($ln.Trim() -ne '')
+        }
+        if (-not $errOnly) { $errOnly = $out }   # fallback: keep all if the filter emptied it
+        $errOnly | ForEach-Object { $script:ErrorLines.Add("    $_") }
         $script:extraFailed++
     } else {
+        Write-Log ("    RESULT : PASS")
+        Write-Log ("-" * 60)
         Write-Log ("{0}: OK." -f $Label)
+        Write-Host ("  [ PASS ] {0}" -f $Label) -ForegroundColor Green
         $script:subCheckStatuses[$Label] = "PASS"
     }
 }
@@ -318,6 +360,12 @@ if (-not $SkipBalanceCheck) {
     $subCheckStatuses["balance check"] = "SKIPPED"
 }
 
+if (-not $SkipVersionInitCheck) {
+    Invoke-SubCheck "check_version_init.ps1" "version/INIT check"
+} else {
+    $subCheckStatuses["version/INIT check"] = "SKIPPED"
+}
+
 if (-not $SkipRegressionCheck) {
     # -SkipUnitTests: the gate's PART 1 is exactly this run; only run its
     # source-invariant checks (PART 2) to avoid re-running the suite.
@@ -327,15 +375,75 @@ if (-not $SkipRegressionCheck) {
 }
 
 $overallPassed = ($failed -eq 0 -and $extraFailed -eq 0)
-Write-Section "FINAL RESULT"
-Write-Field "Unit tests" ("{0} passed / {1} failed / {2} total" -f $passed, $failed, $tests.Count)
-foreach ($entry in $subCheckStatuses.GetEnumerator()) {
-    Write-Field $entry.Key $entry.Value $(if ($entry.Value -eq "PASS") { "Green" } elseif ($entry.Value -like "FAIL*") { "Red" } else { "Yellow" })
+
+# ---------------------------------------------------------------------------
+# Collect version-drift detail for the FINAL RESULT section.
+# We re-read the mod source here (already read above for $ModVersion) to find
+# what the INIT log actually reports, so the summary can show the exact drift.
+# ---------------------------------------------------------------------------
+$script:VersionDriftDetail = $null
+if (Test-Path $ModFile) {
+    $modSrc = Get-Content -Path $ModFile -Raw
+    # Canonical version already in $script:ModVersion (e.g. "v2.5.3")
+    $allInitVer = [regex]::Matches($modSrc, 'INIT:\s*v([\d]+\.[\d]+\.[\d]+)')
+    $staleVers  = @()
+    $canonical  = $script:ModVersion -replace '^v', ''
+    foreach ($m in $allInitVer) {
+        $found = $m.Groups[1].Value
+        if ($found -ne $canonical) { $staleVers += "v$found" }
+    }
+    if ($staleVers.Count -gt 0) {
+        $script:VersionDriftDetail = ("@version says {0}  --  INIT log still says: {1}" -f $script:ModVersion, ($staleVers -join ", "))
+    }
+    # Also flag if no INIT line at all
+    $initForCanonical = [regex]::Matches($modSrc, "INIT:\s*v$([regex]::Escape($canonical))")
+    if ($initForCanonical.Count -eq 0 -and $staleVers.Count -eq 0) {
+        $script:VersionDriftDetail = ("@version says {0}  --  no matching INIT log line found" -f $script:ModVersion)
+    }
 }
+
+Write-Section "FINAL RESULT"
+
+# --- Group 1: Mod identity ---
+Write-Log ""
+Write-Field "Mod version" $script:ModVersion $(if ($script:VersionDriftDetail) { "Yellow" } else { "Cyan" })
+if ($script:VersionDriftDetail) {
+    Write-Field "  Version drift" $script:VersionDriftDetail "Red"
+}
+
+# --- Group 2: Unit tests ---
+Write-Log ""
+$unitColor = if ($failed -eq 0) { "Green" } else { "Red" }
+Write-Field "Unit tests" ("{0} passed  /  {1} failed  /  {2} total" -f $passed, $failed, $tests.Count) $unitColor
+
+# --- Group 3: Guards (grouped by category) ---
+Write-Log ""
+# Source-lint guards
+foreach ($key in @("log-layer guard", "log-layer guard self-test", "empty-body guard", "empty-body guard self-test", "balance check")) {
+    if ($subCheckStatuses.Contains($key)) {
+        $v = $subCheckStatuses[$key]
+        Write-Field ("  " + $key) $v $(if ($v -eq "PASS") { "Green" } elseif ($v -like "FAIL*") { "Red" } else { "Yellow" })
+    }
+}
+Write-Log ""
+# Version + regression guards
+foreach ($key in @("version/INIT check", "regression gate")) {
+    if ($subCheckStatuses.Contains($key)) {
+        $v = $subCheckStatuses[$key]
+        Write-Field ("  " + $key) $v $(if ($v -eq "PASS") { "Green" } elseif ($v -like "FAIL*") { "Red" } else { "Yellow" })
+    }
+}
+
+# --- Group 4: Totals + transcript ---
+Write-Log ""
 Write-Field "Guard failures" ("{0}" -f $extraFailed) $(if ($extraFailed -eq 0) { "Green" } else { "Red" })
 Write-Field "Transcript" $LogFile
+
+# --- Verdict ---
 Write-Log ""
+Write-Log ("-" * 60) -ToConsole
 Write-Field "OVERALL" $(if ($overallPassed) { "PASS" } else { "FAIL" }) $(if ($overallPassed) { "Green" } else { "Red" })
+Write-Log ("-" * 60) -ToConsole
 
 # --- error.log: created ONLY on failure; deleted (or never created) on PASS ---
 $ErrorLogFile = Join-Path $RepoRoot "error.log"

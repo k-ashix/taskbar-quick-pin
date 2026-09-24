@@ -259,6 +259,72 @@ AssertPresent "fullscreen: sampled each poll"            'UpdateFullscreenState'
 AssertPresent "fullscreen: shell state query"            'SHQueryUserNotificationState'
 AssertPresent "fullscreen: gate acts on latched flag"    'g_fullscreenActive'
 
+Head "PART 2o: v2.5.3 -- startup diagnostic version matches @version metadata"
+# The startup INIT log must report the SAME version as the @version header
+# (v2.5.3). A stale "INIT: v2.5.2" diagnostic while the metadata already said
+# 2.5.3 is exactly the inconsistency this guards against. The changelog headings
+# (## v2.5.2, ## v2.5.1, ...) are history and legitimately stay.
+AssertPresent "startup INIT log reports v2.5.3" 'INIT:\s*v2\.5\.3'
+AssertAbsent  "no stale INIT v2.5.2 diagnostic"  'INIT:\s*v2\.5\.2'
+
+Head "PART 2p: Issue 1 -- lock-glow cross-thread state is atomic (no scalar race)"
+# g_lockGlowKind / g_lockGlowMode / g_lockGlowStart are written from BOTH the UI
+# thread (TriggerLockGlow on a keyboard/hotkey gesture) AND the worker, and read
+# by the worker's RenderLockGlow. Unsynchronized plain-scalar access is a data
+# race regardless of x86-64 scalar atomicity, so all three are std::atomic now
+# (the "atomic state handoff" the audit asked for).
+AssertPresent "glow: g_lockGlowStart is std::atomic" 'std::atomic<DWORD>\s+g_lockGlowStart'
+AssertPresent "glow: g_lockGlowKind is std::atomic"  'std::atomic<LockGlowKind>\s+g_lockGlowKind'
+AssertPresent "glow: g_lockGlowMode is std::atomic"  'std::atomic<LockGlowMode>\s+g_lockGlowMode'
+AssertAbsent  "glow: no plain-scalar g_lockGlowStart decl" 'static\s+DWORD\s+g_lockGlowStart\s*='
+AssertAbsent  "glow: no plain-enum g_lockGlowKind decl"    'static\s+LockGlowKind\s+g_lockGlowKind\s*='
+AssertAbsent  "glow: no plain-enum g_lockGlowMode decl"    'static\s+LockGlowMode\s+g_lockGlowMode\s*='
+
+Head "PART 2q: Issue 2 -- settings reload marshaled onto the worker (no cross-thread writes)"
+# WhTool_ModSettingsChanged runs on an arbitrary Windhawk thread. It must NOT read
+# settings or write the worker-owned geometry globals directly (that raced the
+# worker's reads/writes). It only raises an atomic pending flag; the worker (sole
+# owner) re-reads every setting via LoadSettings and resets g_fixedDockWidth /
+# g_dockPositionLocked / g_lastDpiForWidth on its own thread.
+AssertPresent "settings: atomic reload-pending flag"        'std::atomic<bool>\s+g_settingsReloadPending'
+AssertPresent "settings: worker consumes the reload flag"   'g_settingsReloadPending\.exchange\(false\)'
+AssertPresent "settings: worker reloads via LoadSettings"   'g_settingsReloadPending\.exchange\(false\)[\s\S]{0,400}LoadSettings\('
+AssertPresent "settings: callback only raises the flag"     'void WhTool_ModSettingsChanged\(\)\s*\{[\s\S]{0,700}g_settingsReloadPending\s*=\s*true'
+AssertAbsent  "settings: callback no longer calls LoadSettings directly" 'void WhTool_ModSettingsChanged\(\)\s*\{[\s\S]{0,700}LoadSettings\('
+
+Head "PART 2r: Issue 3 -- dock-interaction gate accounts for taskbar auto-hide"
+# With autoHideSync ON and the taskbar slid off screen, RepositionOverlay hides the
+# dock while the cached rect stays valid. DockInteractionAllowed now takes an
+# autoHideHidden arg (fails closed) and the worker derives it from g_taskbarAutoHide
+# so a dock hidden by auto-hide is non-interactive. (Mirrored + unit-tested in
+# tests/dock_active_gate.h.)
+AssertPresent "autohide gate: DockInteractionAllowed has autoHideHidden param" 'DockInteractionAllowed\([\s\S]{0,360}bool\s+autoHideHidden'
+AssertPresent "autohide gate: gate fails closed on autoHideHidden"             'if\s*\(autoHideHidden\)\s+return false;'
+AssertPresent "autohide gate: worker derives it from g_taskbarAutoHide"        'autoHideHidden\s*=\s*g_taskbarAutoHide'
+
+Head "PART 2s: Issue 4 -- taskbar-loss teardown clears the stale cached dock rect"
+# RefreshTaskbarCache's taskbar-lost (!tb) branch cleared the cached taskbar +
+# dimensions but left g_cachedDockRect populated. Clear it too so no stale
+# drop-zone rectangle survives an Explorer restart (state consistency).
+AssertPresent "taskbar-loss branch clears g_cachedDockRect" 'if \(!tb\) \{[\s\S]{0,500}g_cachedDockRect\s*=\s*\{\};'
+
+Head "PART 2t: v10 -- remaining shared-state races hardened"
+# Residual cross-thread hazards the audit flagged, now closed:
+#  * g_hotkeyKey: worker reloads it in LoadSettings; the UI thread reads it to
+#    (re)RegisterHotKey. Now std::atomic<UINT>, matching g_hotkeyMods.
+#  * SEPARATOR_OPACITY: worker-written in LoadSettings, read by WM_PAINT. Now
+#    std::atomic<int>, matching the other UI-read settings.
+#  * The taskbar-loss (!tb) and Start-loss reset branches wrote g_dockLocalW/H
+#    to 0 WITHOUT g_cs while WM_PAINT reads them under g_cs. Both branches now
+#    reset the live geometry inside the same critical section (after STATE_BOOT
+#    so the PART 2i char-budget invariant still holds).
+AssertPresent "hotkey: g_hotkeyKey is std::atomic (worker reload / UI reg read)" 'std::atomic<UINT>\s+g_hotkeyKey'
+AssertAbsent  "hotkey: no plain-scalar g_hotkeyKey decl"                          'static\s+UINT\s+g_hotkeyKey\s*='
+AssertPresent "separator: SEPARATOR_OPACITY is std::atomic (worker write / paint read)" 'std::atomic<int>\s+SEPARATOR_OPACITY'
+AssertAbsent  "separator: no plain-scalar SEPARATOR_OPACITY decl"                 'static\s+int\s+SEPARATOR_OPACITY\s*='
+AssertPresent "geom: taskbar-loss (!tb) reset writes dock geometry under g_cs"    'if \(!tb\) \{[\s\S]{0,1000}EnterCriticalSection\(&g_cs\);[\s\S]{0,150}g_dockLocalW\s*=\s*0;'
+AssertPresent "geom: Start-loss reset writes dock geometry under g_cs"            'g_lastStartLeft\s*=\s*0;[\s\S]{0,300}EnterCriticalSection\(&g_cs\);[\s\S]{0,150}g_dockLocalW\s*=\s*0;'
+
 # --------------------------------------------------------------------------
 # Verdict
 # --------------------------------------------------------------------------
