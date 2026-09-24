@@ -5,7 +5,7 @@
 **Your own mini app dock, tucked neatly to the left of the Start button.**
 
 [![Windhawk Mod](https://img.shields.io/badge/Windhawk_Mod-taskbar--quick--pin-blue.svg)](https://windhawk.net/mods/taskbar-quick-pin)
-[![Version](https://img.shields.io/badge/version-v2.5.3-success.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-v2.5.4-success.svg)](#changelog)
 [![Platform](https://img.shields.io/badge/Windows-11-0078D6.svg)](#)
 [![Build](https://img.shields.io/badge/build-single--file_C%2B%2B-lightgrey.svg)](#)
 
@@ -210,7 +210,7 @@ All settings live in the Windhawk settings panel under this mod. **Most apply in
 | **Max pinned apps** | How many apps you can pin, from 1 to 20. | `5` |
 | **Icon size** | How big each icon is (before your display scaling). 16–48. At 150% scaling, `33` looks like ~50 px. | `33` |
 | **Dock gap from Start** | How far the whole dock sits from the Start button, 0–40 px. | `6` |
-| **Separator opacity** | Visibility of the little divider line between the dock and the rest of the taskbar. 0 = hidden, 100 = solid. | `100` |
+| **Show workspace divider** | Shows the gold divider between your workspace/folder pins and your app pins. Appears only when you have both. | `on` |
 | **Hide dock outline** | Makes the thin grey outline Windows 11 draws around the dock (on all sides) invisible. On = no border; off = system default. Purely cosmetic; applies live. | `off` |
 | **Drag to reorder** | Lets you drag icons left/right to rearrange them. Off = dragging an icon only unpins it. | `on` |
 | **Double-right-click to unpin** | Unpin an icon by double-right-clicking it (with a dust effect). Off = normal right-click menu shows instead. | `off` |
@@ -464,7 +464,7 @@ The app region resizes to fit: never below `MIN_APP_SLOTS` (5), never above `MAX
 `WM_PAINT` draws all icons into a persistent off-screen buffer (`g_alphaBlendDC`/`g_alphaBlendBmp`) then blits once. Per icon: position + hover scale, `DrawIconEx` at `opacity*255`, running dot, lifted-source dimming, drop-zone highlight, and the limit flash.
 
 - **Rounded corners** (`cornerRoundness` 0–100): DWM corner attribute (`DWMWCP_DONOTROUND` / `ROUNDSMALL` / `ROUND`) plus a continuous clip radius `= (h * 0.5) * (roundness / 100)`, so it's smooth and live-updatable, never pixelated.
-- **Separator** (`separatorOpacity`): 0 = none, 100 = solid `LineTo`, 1–99 = cached DIB alpha-blended column.
+- **Workspace divider** (`showWorkspaceDivider`): boolean toggle for the gold divider pill between workspace pins and app pins (the old right-edge separator line was removed).
 
 ---
 
@@ -516,6 +516,12 @@ Contributions welcome — bug reports, docs, and features.
 - The codebase has zero external dependencies and runs as a **tool mod** in its own `windhawk.exe` process — it is **not** injected into `explorer.exe`. Avoid hooking Win32 functions.
 
 ---
+
+### v2.5.4
+
+- **Broadcast-safe lock glow** -- the lock/unlock glow window now lives on the dock's message-pumping UI thread, so a system-wide broadcast (theme change, `WM_SETTINGCHANGE`, some app launches) can no longer stall on it.
+- **Correct placement on scaled / mixed-DPI displays** -- the dock now sets its own per-monitor-v2 DPI awareness, so it lands in the right spot and stays crisp instead of being stretched.
+- **"Separator opacity" is now "Show workspace divider"** (`showWorkspaceDivider`) -- the old 0-100 value behaved the same for every value 1-100, so it is now a simple on/off toggle for the gold divider between workspace pins and app pins.
 
 ### v2.5.3
 

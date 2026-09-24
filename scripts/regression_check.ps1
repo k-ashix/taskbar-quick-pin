@@ -259,13 +259,13 @@ AssertPresent "fullscreen: sampled each poll"            'UpdateFullscreenState'
 AssertPresent "fullscreen: shell state query"            'SHQueryUserNotificationState'
 AssertPresent "fullscreen: gate acts on latched flag"    'g_fullscreenActive'
 
-Head "PART 2o: v2.5.3 -- startup diagnostic version matches @version metadata"
+Head "PART 2o: v2.5.4 -- startup diagnostic version matches @version metadata"
 # The startup INIT log must report the SAME version as the @version header
-# (v2.5.3). A stale "INIT: v2.5.2" diagnostic while the metadata already said
-# 2.5.3 is exactly the inconsistency this guards against. The changelog headings
-# (## v2.5.2, ## v2.5.1, ...) are history and legitimately stay.
-AssertPresent "startup INIT log reports v2.5.3" 'INIT:\s*v2\.5\.3'
-AssertAbsent  "no stale INIT v2.5.2 diagnostic"  'INIT:\s*v2\.5\.2'
+# (v2.5.4). A stale "INIT: v2.5.3" diagnostic while the metadata already said
+# 2.5.4 is exactly the inconsistency this guards against. The changelog headings
+# (## v2.5.3, ## v2.5.2, ...) are history and legitimately stay.
+AssertPresent "startup INIT log reports v2.5.4" 'INIT:\s*v2\.5\.4'
+AssertAbsent  "no stale INIT v2.5.3 diagnostic"  'INIT:\s*v2\.5\.3'
 
 Head "PART 2p: Issue 1 -- lock-glow cross-thread state is atomic (no scalar race)"
 # g_lockGlowKind / g_lockGlowMode / g_lockGlowStart are written from BOTH the UI
@@ -312,18 +312,59 @@ Head "PART 2t: v10 -- remaining shared-state races hardened"
 # Residual cross-thread hazards the audit flagged, now closed:
 #  * g_hotkeyKey: worker reloads it in LoadSettings; the UI thread reads it to
 #    (re)RegisterHotKey. Now std::atomic<UINT>, matching g_hotkeyMods.
-#  * SEPARATOR_OPACITY: worker-written in LoadSettings, read by WM_PAINT. Now
-#    std::atomic<int>, matching the other UI-read settings.
+#  * SHOW_WORKSPACE_DIVIDER: worker-written in LoadSettings, read by WM_PAINT.
+#    std::atomic<bool>, matching the other UI-read settings (this replaced the
+#    old int SEPARATOR_OPACITY -- see PART 2w).
 #  * The taskbar-loss (!tb) and Start-loss reset branches wrote g_dockLocalW/H
 #    to 0 WITHOUT g_cs while WM_PAINT reads them under g_cs. Both branches now
 #    reset the live geometry inside the same critical section (after STATE_BOOT
 #    so the PART 2i char-budget invariant still holds).
 AssertPresent "hotkey: g_hotkeyKey is std::atomic (worker reload / UI reg read)" 'std::atomic<UINT>\s+g_hotkeyKey'
 AssertAbsent  "hotkey: no plain-scalar g_hotkeyKey decl"                          'static\s+UINT\s+g_hotkeyKey\s*='
-AssertPresent "separator: SEPARATOR_OPACITY is std::atomic (worker write / paint read)" 'std::atomic<int>\s+SEPARATOR_OPACITY'
-AssertAbsent  "separator: no plain-scalar SEPARATOR_OPACITY decl"                 'static\s+int\s+SEPARATOR_OPACITY\s*='
+AssertPresent "divider: SHOW_WORKSPACE_DIVIDER is std::atomic<bool> (worker write / paint read)" 'std::atomic<bool>\s+SHOW_WORKSPACE_DIVIDER'
+AssertAbsent  "divider: no plain-scalar SHOW_WORKSPACE_DIVIDER decl"              'static\s+bool\s+SHOW_WORKSPACE_DIVIDER\s*='
 AssertPresent "geom: taskbar-loss (!tb) reset writes dock geometry under g_cs"    'if \(!tb\) \{[\s\S]{0,1000}EnterCriticalSection\(&g_cs\);[\s\S]{0,150}g_dockLocalW\s*=\s*0;'
 AssertPresent "geom: Start-loss reset writes dock geometry under g_cs"            'g_lastStartLeft\s*=\s*0;[\s\S]{0,300}EnterCriticalSection\(&g_cs\);[\s\S]{0,150}g_dockLocalW\s*=\s*0;'
+
+Head "PART 2u: this round Issue 1 -- lock-glow window lives on the UI (pumping) thread"
+# The lock-glow layered window must be CREATED on the UI thread (which runs a
+# GetMessageW pump) via PrewarmDragEffectWindows -- NOT lazily on the worker,
+# which only sleeps on g_exitEvent and never pumps. A top-level window owned by
+# the non-pumping worker hangs any app that broadcasts SendMessage / a DDE
+# WM_DDE_INITIATE / a WM_SETTINGCHANGE (SendMessageTimeout) to HWND_BROADCAST.
+# So: prewarm creates + presents it, RenderLockGlow (worker) only bails when the
+# surface is absent, and teardown happens on the UI thread next to tether/vanish.
+AssertPresent "glow: created on the UI thread via prewarm"        'PrewarmDragEffectWindows\(\)\s*\{[\s\S]{0,1500}EnsureLockGlowSurface\(\)'
+AssertPresent "glow: prewarm presents the glow layer"            'PrewarmDragEffectWindows[\s\S]{0,1700}PrewarmLayered\(g_lockGlowWnd'
+AssertAbsent  "glow: RenderLockGlow no longer CREATES the window" 'RenderLockGlow\(\)\s*\{[\s\S]{0,1600}EnsureLockGlowSurface\('
+AssertPresent "glow: RenderLockGlow bails when surface absent"    'if \(!g_lockGlowWnd \|\| !g_lockGlowDIB'
+AssertPresent "glow: destroyed on UI thread next to tether/vanish" 'DestroyWindow\(g_vanishWnd\)[\s\S]{0,600}DestroyWindow\(g_lockGlowWnd\)'
+AssertAbsent  "glow: worker no longer owns/destroys the window"   'single-thread ownership of the lock-glow window'
+
+Head "PART 2v: this round Issue 2 -- explicit per-monitor-v2 DPI on geometry/window threads"
+# As a tool mod the host is windhawk-mod.exe, not explorer.exe, so the process no
+# longer inherits Explorer's per-monitor-v2 DPI context. Every thread that reads
+# physical taskbar/Start rects or creates the dock's top-level windows must set it
+# explicitly, or the rects are virtualized on scaled / mixed-DPI setups and the
+# dock lands in the wrong place with DWM-stretched bitmaps. A window inherits the
+# DPI context of the thread that creates it, so UiThreadProc must set it first.
+AssertPresent "dpi: UiThreadProc sets per-monitor-v2 before creating windows" 'UiThreadProc\(LPVOID\)\s*\{[\s\S]{0,1100}SetThreadDpiAwarenessContext\(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2\)'
+AssertPresent "dpi: WorkerThread sets per-monitor-v2"                          'WorkerThread\(LPVOID\)\s*\{[\s\S]{0,600}SetThreadDpiAwarenessContext\(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2\)'
+AssertPresent "dpi: LaunchWorkspaceThread sets per-monitor-v2"                 'LaunchWorkspaceThread\(LPVOID[^\)]*\)\s*\{[\s\S]{0,400}SetThreadDpiAwarenessContext\(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2\)'
+AssertPresent "dpi: WhTool_ModInit sets per-monitor-v2 before RefreshTaskbarCache" 'WhTool_ModInit\(\)\s*\{[\s\S]{0,400}SetThreadDpiAwarenessContext\(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2\)[\s\S]{0,4000}RefreshTaskbarCache\(\)'
+
+Head "PART 2w: this round Issue 3 -- separatorOpacity replaced by boolean showWorkspaceDivider"
+# The right-edge separator line is gone; the old 0..100 separatorOpacity (whose
+# values 1..100 all behaved identically) is now a plain on/off toggle for the gold
+# workspace/app divider pill: the boolean showWorkspaceDivider, read into a
+# std::atomic<bool>, with the paint driven by the mirrored + unit-tested predicate
+# ShouldDrawWorkspaceDivider (tests/workspace_divider.h + _test.cpp).
+AssertPresent "divider: boolean showWorkspaceDivider setting key"    '(?m)^\s*-\s*showWorkspaceDivider:'
+AssertPresent "divider: loaded from the showWorkspaceDivider setting" 'Wh_GetIntSetting\(L"showWorkspaceDivider"'
+AssertPresent "divider: paint uses ShouldDrawWorkspaceDivider predicate" 'ShouldDrawWorkspaceDivider\('
+AssertAbsent  "divider: old separatorOpacity setting key gone (settings block)" '(?m)^\s*-\s*separatorOpacity:'
+AssertAbsent  "divider: old separatorOpacity setting is never read"  'Wh_GetIntSetting\(L"separatorOpacity"'
+AssertAbsent  "divider: old SEPARATOR_OPACITY code identifier gone"  'SEPARATOR_OPACITY'
 
 # --------------------------------------------------------------------------
 # Verdict
