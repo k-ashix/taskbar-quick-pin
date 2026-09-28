@@ -2,6 +2,8 @@
 
 # 📌 Left Taskbar Quick Pin Dock
 
+# Download at Windhawk (https://windhawk.net/mods/taskbar-quick-pin)
+
 **Your own mini app dock, tucked neatly to the left of the Start button.**
 
 [![Windhawk Mod](https://img.shields.io/badge/Windhawk_Mod-taskbar--quick--pin-blue.svg)](https://windhawk.net/mods/taskbar-quick-pin)
